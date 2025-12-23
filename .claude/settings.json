@@ -176,7 +176,8 @@
   "enabledMcpjsonServers": [
     "claude-flow",
     "ruv-swarm",
-    "agentic-qe"
+    "agentic-qe",
+    "vibium"
   ],
   "statusLine": {
     "type": "command",
