@@ -12,6 +12,7 @@ import { BaseHandler, HandlerResponse } from '../base-handler';
 import type { SwarmMemoryManager } from '../../../core/memory/SwarmMemoryManager';
 import type { AgentRegistry } from '../../services/AgentRegistry';
 import type { HookExecutor } from '../../services/HookExecutor';
+import { seededRandom } from '../../../utils/SeededRandom';
 
 export interface LearningPattern {
   agentId?: string;
@@ -31,6 +32,62 @@ export class LearningStorePatternHandler extends BaseHandler {
     private eventBus?: import('events').EventEmitter
   ) {
     super();
+  }
+
+  /**
+   * Track pattern usage for effectiveness measurement
+   *
+   * @param patternId - Pattern ID being used
+   * @param context - Usage context (agentId, projectId, taskType)
+   * @param success - Whether the pattern application was successful
+   * @param executionTimeMs - How long the pattern execution took
+   */
+  async trackPatternUsage(
+    patternId: string,
+    context: { agentId?: string; projectId?: string; taskType?: string },
+    success: boolean,
+    executionTimeMs: number = 0
+  ): Promise<void> {
+    try {
+      if (!this.memoryManager) {
+        return;
+      }
+
+      const db = (this.memoryManager as any).db;
+      if (!db) {
+        return;
+      }
+
+      db.prepare(`
+        INSERT INTO pattern_usage (
+          pattern_id, project_id, agent_id, context, success,
+          execution_time_ms, used_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        patternId,
+        context.projectId || null,
+        context.agentId || null,
+        JSON.stringify(context),
+        success ? 1 : 0,
+        executionTimeMs,
+        new Date().toISOString()
+      );
+
+      this.log('info', `Pattern usage tracked: ${patternId}`, {
+        agentId: context.agentId,
+        success,
+        executionTimeMs
+      });
+
+      // Also increment usage_count in patterns table
+      db.prepare(`
+        UPDATE patterns SET usage_count = usage_count + 1 WHERE id = ?
+      `).run(patternId);
+
+    } catch (error) {
+      this.log('warn', `Failed to track pattern usage: ${patternId}`, { error });
+      // Don't throw - usage tracking is non-critical
+    }
   }
 
   async handle(args: LearningPattern): Promise<HandlerResponse> {
@@ -71,7 +128,7 @@ export class LearningStorePatternHandler extends BaseHandler {
       // Note: patterns table should have agent_id, domain, success_rate columns (added via migration)
 
       // Generate unique pattern ID
-      const patternId = `pattern-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+      const patternId = `pattern-${Date.now()}-${seededRandom.random().toString(36).substring(2, 9)}`;
 
       // Check if pattern already exists (for the same agent + pattern text)
       const existing = agentId ? db.prepare(`

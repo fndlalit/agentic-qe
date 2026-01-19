@@ -48,6 +48,9 @@ test-results/
 .vscode/
 .idea/
 *.swp
+
+# Local setup scripts
+setup-dev.sh
 *.swo
 *~
 
@@ -130,9 +133,11 @@ data/
 test-projects/
 
 
-# Mock files - allow agentdb mock for CI
+# Mock files - allow ESM module mocks for CI
 __mocks__/*
 !__mocks__/agentdb.ts
+!__mocks__/@ruvector/
+!__mocks__/@ruvector/**
 
 # Test artifacts that should not be committed
 test-learning-persistence
@@ -151,6 +156,7 @@ memory/
 !src/core/memory/
 !tests/memory/
 coordination/
+!src/edge/p2p/coordination/
 memory/claude-flow-data.json
 memory/sessions/*
 !memory/sessions/README.md
@@ -170,3 +176,12 @@ claude-flow
 hive-mind-prompt-*.txt
 tests/tmp/*
 tmp/*
+
+# RuVector intelligence data (local learning, not for git)
+.ruvector/
+**/intelligence.json
+**/.ruvector/
+.env.supabase
+
+# Private/confidential folders - never push to repo
+docs/l2c-agentic-transformation/

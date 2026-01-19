@@ -21,6 +21,7 @@ import { BaseAgent, BaseAgentConfig } from './BaseAgent';
 import { QETask, QEAgentType, DeploymentReadinessConfig as _DeploymentReadinessConfig } from '../types';
 import { EventEmitter as _EventEmitter } from 'events';
 import { PreTaskData, PostTaskData, TaskErrorData } from '../types/hook.types';
+import { Logger } from '../utils/Logger';
 
 // ============================================================================
 // Type Definitions
@@ -95,6 +96,7 @@ export interface QualitySignals {
     skipped: number;
     flakyCount: number;
   };
+  [key: string]: unknown;
 }
 
 export interface ReadinessCheckResult {
@@ -108,6 +110,7 @@ export interface ReadinessCheckResult {
   reasons: string[];
   recommendations: string[];
   timestamp: Date;
+  [key: string]: unknown;
 }
 
 export interface ChecklistResult {
@@ -116,6 +119,7 @@ export interface ChecklistResult {
   passedCount: number;
   failedCount: number;
   warningCount: number;
+  [key: string]: unknown;
 }
 
 export interface ChecklistItem {
@@ -144,6 +148,7 @@ export interface RollbackRiskAssessment {
     estimatedTime: number;
     automated: boolean;
   };
+  [key: string]: unknown;
 }
 
 export interface ConfidenceCalculation {
@@ -161,6 +166,7 @@ export interface ConfidenceCalculation {
   };
   basedOnDeployments: number;
   recommendation: string;
+  [key: string]: unknown;
 }
 
 export interface StakeholderReport {
@@ -178,6 +184,7 @@ export interface StakeholderReport {
   recommendation: string;
   format: 'markdown' | 'html' | 'json';
   timestamp: Date;
+  [key: string]: unknown;
 }
 
 // ============================================================================
@@ -315,15 +322,16 @@ export class DeploymentReadinessAgent extends BaseAgent {
     await super.onPreTask(data);
 
     // Load historical deployment data
-    const history = await this.memoryStore.retrieve(
+    const historyWrapper = await this.memoryStore.retrieve(
       `aqe/${this.agentId.type}/history`
-    );
+    ) as { entries?: Array<Record<string, unknown>> } | null;
+    const history = historyWrapper?.entries;
 
     if (history) {
-      console.log(`Loaded ${history.length} historical deployment checks`);
+      this.logger.info(`Loaded ${history.length} historical deployment checks`);
     }
 
-    console.log(`[${this.agentId.type}] Starting deployment readiness check`, {
+    this.logger.info(`[${this.agentId.type}] Starting deployment readiness check`, {
       taskId: data.assignment.id,
       taskType: data.assignment.task.type
     });
@@ -357,7 +365,7 @@ export class DeploymentReadinessAgent extends BaseAgent {
       timestamp: new Date()
     });
 
-    console.log(`[${this.agentId.type}] Deployment readiness check completed`, {
+    this.logger.info(`[${this.agentId.type}] Deployment readiness check completed`, {
       taskId: data.assignment.id,
       ready: result?.ready || false,
       riskLevel: result?.riskLevel
@@ -388,7 +396,7 @@ export class DeploymentReadinessAgent extends BaseAgent {
       timestamp: new Date()
     });
 
-    console.error(`[${this.agentId.type}] Deployment readiness check failed`, {
+    this.logger.error(`[${this.agentId.type}] Deployment readiness check failed`, {
       taskId: data.assignment.id,
       error: data.error.message
     });
@@ -399,7 +407,7 @@ export class DeploymentReadinessAgent extends BaseAgent {
   // ============================================================================
 
   protected async initializeComponents(): Promise<void> {
-    console.log(`DeploymentReadinessAgent ${this.agentId.id} initializing components`);
+    this.logger.info(`DeploymentReadinessAgent ${this.agentId.id} initializing components`);
 
     // Initialize monitoring clients
     if (this.config.integrations?.monitoring) {
@@ -407,9 +415,9 @@ export class DeploymentReadinessAgent extends BaseAgent {
         try {
           // Mock initialization - in production, would initialize actual clients
           this.monitoringClients.set(tool, { connected: true, tool });
-          console.log(`Initialized ${tool} monitoring client`);
+          this.logger.info(`Initialized ${tool} monitoring client`);
         } catch (error) {
-          console.warn(`Failed to initialize ${tool}:`, error);
+          this.logger.warn(`Failed to initialize ${tool}:`, error);
         }
       }
     }
@@ -417,53 +425,53 @@ export class DeploymentReadinessAgent extends BaseAgent {
     // Load deployment policies
     const policies = await this.memoryStore.retrieve('aqe/deployment/policies');
     if (policies) {
-      console.log('Loaded deployment policies from memory');
+      this.logger.info('Loaded deployment policies from memory');
     }
 
     // Register for events from other agents
     this.registerEventHandler({
       eventType: 'quality-gate.evaluated',
       handler: async (event) => {
-        console.log('Quality gate evaluation received:', event.data);
-        await this.handleQualityGateResult(event.data);
+        this.logger.info('Quality gate evaluation received:', event.data);
+        await this.handleQualityGateResult(event.data as QualityGateEventData);
       }
     });
 
     this.registerEventHandler({
       eventType: 'performance.test.complete',
       handler: async (event) => {
-        console.log('Performance test results received:', event.data);
-        await this.handlePerformanceResults(event.data);
+        this.logger.info('Performance test results received:', event.data);
+        await this.handlePerformanceResults(event.data as PerformanceEventData);
       }
     });
 
     this.registerEventHandler({
       eventType: 'security.scan.complete',
       handler: async (event) => {
-        console.log('Security scan results received:', event.data);
-        await this.handleSecurityResults(event.data);
+        this.logger.info('Security scan results received:', event.data);
+        await this.handleSecurityResults(event.data as SecurityEventData);
       }
     });
 
     this.registerEventHandler({
       eventType: 'deployment.request',
       handler: async (event) => {
-        console.log('Deployment request received:', event.data);
-        await this.performReadinessCheck(event.data);
+        this.logger.info('Deployment request received:', event.data);
+        await this.performReadinessCheck(event.data as DeploymentMetadata);
       }
     });
 
-    console.log('DeploymentReadinessAgent components initialized successfully');
+    this.logger.info('DeploymentReadinessAgent components initialized successfully');
   }
 
   protected async loadKnowledge(): Promise<void> {
-    console.log('Loading deployment readiness knowledge base');
+    this.logger.info('Loading deployment readiness knowledge base');
 
     // Load historical deployment data
     const history = await this.memoryStore.retrieve('aqe/deployment/history');
     if (history && Array.isArray(history)) {
       this.deploymentHistory = history;
-      console.log(`Loaded ${history.length} historical deployments`);
+      this.logger.info(`Loaded ${history.length} historical deployments`);
     }
 
     // Load success patterns
@@ -472,31 +480,31 @@ export class DeploymentReadinessAgent extends BaseAgent {
       'deployment-patterns'
     );
     if (patterns) {
-      console.log('Loaded deployment success patterns');
+      this.logger.info('Loaded deployment success patterns');
     }
 
     // Load failure correlation data
     const failureData = await this.memoryStore.retrieve('aqe/deployment/failure-correlations');
     if (failureData) {
-      console.log('Loaded deployment failure correlation data');
+      this.logger.info('Loaded deployment failure correlation data');
     }
 
-    console.log('Deployment readiness knowledge loaded successfully');
+    this.logger.info('Deployment readiness knowledge loaded successfully');
   }
 
   protected async cleanup(): Promise<void> {
-    console.log(`DeploymentReadinessAgent ${this.agentId.id} cleaning up resources`);
+    this.logger.info(`DeploymentReadinessAgent ${this.agentId.id} cleaning up resources`);
 
-    // Save deployment history
-    await this.memoryStore.store('aqe/deployment/history', this.deploymentHistory);
+    // Save deployment history (wrap in object for SerializableValue compatibility)
+    await this.memoryStore.store('aqe/deployment/history', { entries: this.deploymentHistory } as Record<string, unknown>);
 
     // Cleanup monitoring clients
     for (const [tool, _client] of this.monitoringClients.entries()) {
       try {
         // In production, would properly close connections
-        console.log(`Cleaned up ${tool} monitoring client`);
+        this.logger.info(`Cleaned up ${tool} monitoring client`);
       } catch (error) {
-        console.warn(`Error cleaning up ${tool}:`, error);
+        this.logger.warn(`Error cleaning up ${tool}:`, error);
       }
     }
     this.monitoringClients.clear();
@@ -504,34 +512,34 @@ export class DeploymentReadinessAgent extends BaseAgent {
     // Clear temporary data
     await this.memoryStore.delete('aqe/deployment/temp-*', 'aqe');
 
-    console.log('DeploymentReadinessAgent cleanup completed');
+    this.logger.info('DeploymentReadinessAgent cleanup completed');
   }
 
-  protected async performTask(task: QETask): Promise<any> {
+  protected async performTask(task: QETask): Promise<unknown> {
     const taskType = task.type;
-    const taskData = task.payload;
+    const taskData = task.payload as Record<string, unknown>;
 
     switch (taskType) {
       case 'deployment-readiness-check':
-        return await this.performReadinessCheck(taskData);
+        return await this.performReadinessCheck(taskData as unknown as DeploymentMetadata);
 
       case 'calculate-confidence-score':
-        return await this.calculateConfidenceScore(taskData);
+        return await this.calculateConfidenceScore(taskData as { signals: QualitySignals; metadata: DeploymentMetadata });
 
       case 'predict-rollback-risk':
-        return await this.predictRollbackRisk(taskData);
+        return await this.predictRollbackRisk(taskData as { signals: QualitySignals; metadata: DeploymentMetadata });
 
       case 'generate-readiness-report':
-        return await this.generateReadinessReport(taskData);
+        return await this.generateReadinessReport(taskData as { deploymentId: string; format?: 'markdown' | 'html' | 'json' });
 
       case 'validate-checklist':
-        return await this.validateChecklist(taskData);
+        return await this.validateChecklist(taskData as unknown as DeploymentMetadata);
 
       case 'aggregate-quality-signals':
-        return await this.aggregateQualitySignals(taskData);
+        return await this.aggregateQualitySignals(taskData as unknown as DeploymentMetadata);
 
       case 'monitor-deployment':
-        return await this.monitorDeployment(taskData);
+        return await this.monitorDeployment(taskData as { deploymentId: string; duration: number });
 
       default:
         throw new Error(`Unsupported task type: ${taskType}`);
@@ -546,7 +554,7 @@ export class DeploymentReadinessAgent extends BaseAgent {
    * Perform comprehensive deployment readiness check
    */
   private async performReadinessCheck(metadata: DeploymentMetadata): Promise<ReadinessCheckResult> {
-    console.log(`Performing readiness check for deployment: ${metadata.deploymentId}`);
+    this.logger.info(`Performing readiness check for deployment: ${metadata.deploymentId}`);
 
     // 1. Aggregate signals from quality-gate, performance, security agents
     const signals = await this.aggregateQualitySignals(metadata);
@@ -611,7 +619,7 @@ export class DeploymentReadinessAgent extends BaseAgent {
       }, 'high');
     }
 
-    console.log(
+    this.logger.info(
       `Readiness check complete. Decision: ${decision}, Confidence: ${confidence.score}%, Risk: ${riskLevel}`
     );
 
@@ -622,7 +630,7 @@ export class DeploymentReadinessAgent extends BaseAgent {
    * Aggregate quality signals from all testing stages
    */
   private async aggregateQualitySignals(metadata: DeploymentMetadata): Promise<QualitySignals> {
-    console.log('Aggregating quality signals from all agents');
+    this.logger.info('Aggregating quality signals from all agents');
 
     const signals: QualitySignals = {};
 
@@ -693,7 +701,7 @@ export class DeploymentReadinessAgent extends BaseAgent {
     signals: QualitySignals;
     metadata: DeploymentMetadata;
   }): Promise<ConfidenceCalculation> {
-    console.log('Calculating release confidence score');
+    this.logger.info('Calculating release confidence score');
 
     const { signals } = data;
 
@@ -866,7 +874,7 @@ export class DeploymentReadinessAgent extends BaseAgent {
     signals: QualitySignals;
     metadata: DeploymentMetadata;
   }): Promise<RollbackRiskAssessment> {
-    console.log('Predicting rollback risk');
+    this.logger.info('Predicting rollback risk');
 
     const { signals, metadata } = data;
 
@@ -1041,7 +1049,7 @@ export class DeploymentReadinessAgent extends BaseAgent {
    * Validate deployment checklist
    */
   private async validateChecklist(metadata: DeploymentMetadata): Promise<ChecklistResult> {
-    console.log('Validating deployment checklist');
+    this.logger.info('Validating deployment checklist');
 
     const items: ChecklistItem[] = [];
 
@@ -1399,17 +1407,18 @@ export class DeploymentReadinessAgent extends BaseAgent {
     deploymentId: string;
     format?: 'markdown' | 'html' | 'json';
   }): Promise<StakeholderReport> {
-    console.log(`Generating deployment readiness report for ${data.deploymentId}`);
+    this.logger.info(`Generating deployment readiness report for ${data.deploymentId}`);
 
     // Retrieve readiness check result
-    const readinessCheck = await this.memoryStore.retrieve(
+    const readinessCheckRaw = await this.memoryStore.retrieve(
       `aqe/deployment/reports/${data.deploymentId}`
     );
 
-    if (!readinessCheck) {
+    if (!readinessCheckRaw) {
       throw new Error(`No readiness check found for deployment ${data.deploymentId}`);
     }
 
+    const readinessCheck = readinessCheckRaw as ReadinessCheckResult;
     const format = data.format || 'markdown';
 
     const report: StakeholderReport = {
@@ -1504,7 +1513,7 @@ export class DeploymentReadinessAgent extends BaseAgent {
     deploymentId: string;
     duration: number;
   }): Promise<{ status: 'healthy' | 'degraded' | 'failed'; metrics: DeploymentMonitoringMetrics }> {
-    console.log(`Monitoring deployment ${data.deploymentId} for ${data.duration} minutes`);
+    this.logger.info(`Monitoring deployment ${data.deploymentId} for ${data.duration} minutes`);
 
     // Mock monitoring implementation
     // In production, would integrate with monitoring platforms

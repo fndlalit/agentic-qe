@@ -5,6 +5,7 @@
  */
 
 import { EventEmitter } from 'events';
+import { Logger } from '../utils/Logger';
 import {
   AgentId,
   QEAgentType as AgentType,
@@ -93,6 +94,61 @@ import { KnowledgeGraphContextBuilder, ContextBuilderConfig, EnrichedContext, Co
 import { HybridSearchEngine } from '../code-intelligence/search/HybridSearchEngine.js';
 import { GraphBuilder } from '../code-intelligence/graph/GraphBuilder.js';
 
+// Nervous System Integration (Wave 7 - Bio-Inspired Intelligence)
+import type {
+  NervousSystemConfig,
+  NervousSystemEnhancedAgent,
+  NervousSystemStats,
+  TaskFailure,
+  WorkspaceItem,
+  StrategyRecommendation as NervousSystemStrategyRecommendation,
+} from '../nervous-system/integration/NervousSystemEnhancement.js';
+import {
+  enhanceWithNervousSystem,
+  saveNervousSystemState,
+  restoreNervousSystemState,
+} from '../nervous-system/integration/NervousSystemEnhancement.js';
+import type { TestPattern, PatternSearchResult } from '../core/memory/IPatternStore.js';
+import type { AgentWorkspaceItem } from '../nervous-system/integration/WorkspaceAgent.js';
+import type { EnergySavingsReport } from '../nervous-system/integration/CircadianAgent.js';
+import type { CircadianPhase } from '../nervous-system/adapters/CircadianController.js';
+
+// Nervous System Persistence (Wave 7.1 - State Persistence)
+import {
+  NervousSystemPersistenceManager,
+  getSharedPersistenceManager,
+} from '../nervous-system/persistence/NervousSystemPersistenceManager.js';
+
+// Network Policy Enforcement (SP-3 - Issue #146)
+import type {
+  NetworkPolicy,
+  PolicyCheckResult,
+  NetworkPolicyManagerConfig,
+  AuditStats,
+  RateLimitStatus,
+} from '../infrastructure/network/types.js';
+import {
+  NetworkPolicyManager,
+  createNetworkPolicyManager,
+} from '../infrastructure/network/NetworkPolicyManager.js';
+import { getNetworkPolicy } from '../infrastructure/network/policies/default-policies.js';
+
+// Sandbox Infrastructure (SP-1 - Issue #146)
+import type {
+  SandboxConfig,
+  ContainerInfo,
+  ResourceStats,
+  SandboxCreateResult,
+  HealthCheckResult,
+  SandboxEvent,
+  SandboxEventHandler,
+} from '../infrastructure/sandbox/types.js';
+import {
+  SandboxManager,
+  createSandboxManager,
+} from '../infrastructure/sandbox/SandboxManager.js';
+import { getAgentSandboxConfig } from '../infrastructure/sandbox/profiles/agent-profiles.js';
+
 // Re-export utilities for backward compatibility
 export { isSwarmMemoryManager, validateLearningConfig };
 
@@ -177,6 +233,42 @@ interface IQEPatternStore {
   getImplementationInfo?(): { type: string } | undefined;
 }
 
+/**
+ * Network Policy configuration for agents (SP-3 - Issue #146)
+ * Enables domain whitelisting, rate limiting, and audit logging
+ */
+export interface AgentNetworkPolicyConfig {
+  /** Enable network policy enforcement (default: true) */
+  enabled?: boolean;
+  /** Use shared NetworkPolicyManager instance */
+  sharedManager?: NetworkPolicyManager;
+  /** Custom policy overrides for this agent */
+  policyOverrides?: Partial<NetworkPolicy>;
+  /** Enable audit logging (default: true) */
+  enableAuditLogging?: boolean;
+  /** Debug mode for network policy */
+  debug?: boolean;
+}
+
+/**
+ * Sandbox configuration for agents (SP-1 - Issue #146)
+ * Enables Docker-based agent isolation with resource limits
+ */
+export interface AgentSandboxConfig {
+  /** Enable sandbox isolation (default: false - opt-in) */
+  enabled?: boolean;
+  /** Use shared SandboxManager instance (for fleet coordination) */
+  sharedManager?: SandboxManager;
+  /** Custom sandbox config overrides for this agent */
+  sandboxOverrides?: Partial<SandboxConfig>;
+  /** Enable resource monitoring (default: true when sandbox enabled) */
+  enableResourceMonitoring?: boolean;
+  /** Auto-create sandbox container on agent initialize (default: true) */
+  autoCreateSandbox?: boolean;
+  /** Debug mode for sandbox operations */
+  debug?: boolean;
+}
+
 export interface BaseAgentConfig {
   id?: string;
   type: AgentType;
@@ -205,9 +297,25 @@ export interface BaseAgentConfig {
     searchEngine?: HybridSearchEngine;
     graphBuilder?: GraphBuilder;
   };
+  /**
+   * Nervous System configuration (Wave 7 - Bio-Inspired Intelligence)
+   * Enables HDC patterns, BTSP learning, workspace coordination, and circadian cycling
+   */
+  nervousSystem?: NervousSystemConfig;
+  /**
+   * Network Policy configuration (SP-3 - Issue #146)
+   * Enables domain whitelisting, rate limiting, and audit logging for network requests
+   */
+  networkPolicy?: AgentNetworkPolicyConfig;
+  /**
+   * Sandbox configuration (SP-1 - Issue #146)
+   * Enables Docker-based agent isolation with resource limits
+   */
+  sandbox?: AgentSandboxConfig;
 }
 
 export abstract class BaseAgent extends EventEmitter {
+  protected readonly logger = Logger.getInstance();
   protected readonly agentId: AgentId;
   protected readonly capabilities: Map<string, AgentCapability>;
   protected readonly context?: AgentContext;
@@ -246,6 +354,26 @@ export abstract class BaseAgent extends EventEmitter {
   // Code Intelligence Context (Wave 6 - Knowledge Graph Integration)
   protected codeIntelligenceContextBuilder?: KnowledgeGraphContextBuilder;
   private codeIntelligenceConfig?: BaseAgentConfig['codeIntelligence'];
+
+  // Nervous System Integration (Wave 7 - Bio-Inspired Intelligence)
+  protected nervousSystemConfig?: NervousSystemConfig;
+  protected nervousSystemEnhanced: boolean = false;
+  private nervousSystemMethods?: NervousSystemEnhancedAgent;
+  // Nervous System Persistence (Wave 7.1)
+  private nervousSystemPersistence?: NervousSystemPersistenceManager;
+
+  // Network Policy Enforcement (SP-3 - Issue #146)
+  protected networkPolicyManager?: NetworkPolicyManager;
+  protected networkPolicyConfig: AgentNetworkPolicyConfig;
+  private networkPolicyInitialized: boolean = false;
+  private networkPolicyOwned: boolean = false; // true if we created the manager (not shared)
+
+  // Sandbox Infrastructure (SP-1 - Issue #146)
+  protected sandboxManager?: SandboxManager;
+  protected sandboxConfig: AgentSandboxConfig;
+  private sandboxInitialized: boolean = false;
+  private sandboxOwned: boolean = false; // true if we created the manager (not shared)
+  private containerId?: string; // Container ID if running in sandbox
 
   // Service classes
   protected readonly lifecycleManager: AgentLifecycleManager;
@@ -294,10 +422,21 @@ export abstract class BaseAgent extends EventEmitter {
     // Code Intelligence configuration (Wave 6 - Knowledge Graph Integration)
     this.codeIntelligenceConfig = config.codeIntelligence;
 
+    // Nervous System configuration (Wave 7 - Bio-Inspired Intelligence)
+    this.nervousSystemConfig = config.nervousSystem;
+
+    // Network Policy configuration (SP-3 - Issue #146)
+    // Default enabled for security, opt-out available
+    this.networkPolicyConfig = config.networkPolicy ?? { enabled: true };
+
+    // Sandbox configuration (SP-1 - Issue #146)
+    // Default disabled (opt-in) - requires Docker infrastructure
+    this.sandboxConfig = config.sandbox ?? { enabled: false };
+
     // Early validation (Issue #137)
     const validation = validateLearningConfig(config);
     if (!validation.valid && validation.warning) {
-      console.warn(`[${this.agentId.id}] CONFIG WARNING: ${validation.warning}`);
+      this.logger.warn(`[${this.agentId.id}] CONFIG WARNING: ${validation.warning}`);
     }
 
     // Initialize services
@@ -359,7 +498,7 @@ export abstract class BaseAgent extends EventEmitter {
               this.strategies.learning = createLearningAdapter(this.learningEngine);
             }
           } else if (this.enableLearning) {
-            console.warn(`[${this.agentId.id}] Learning disabled: memoryStore is ${this.memoryStore.constructor.name}`);
+            this.logger.warn(`[${this.agentId.id}] Learning disabled: memoryStore is ${this.memoryStore.constructor.name}`);
           }
 
           // Initialize LLM Provider (Phase 0 - RuvLLM Integration)
@@ -373,6 +512,15 @@ export abstract class BaseAgent extends EventEmitter {
 
           // Initialize Code Intelligence Context Builder (Wave 6)
           await this.initializeCodeIntelligence();
+
+          // Initialize Nervous System (Wave 7 - Bio-Inspired Intelligence)
+          await this.initializeNervousSystem();
+
+          // Initialize Network Policy (SP-3 - Issue #146)
+          await this.initializeNetworkPolicy();
+
+          // Initialize Sandbox (SP-1 - Issue #146)
+          await this.initializeSandbox();
 
           await this.initializeComponents();
           await this.executeHook('post-initialization');
@@ -433,6 +581,9 @@ export abstract class BaseAgent extends EventEmitter {
           await this.cleanupLLM(); // Phase 0: Cleanup LLM resources
           await this.cleanupFederated(); // Phase 0 M0.5: Cleanup federated learning
           await this.cleanupPatternStore(); // Phase 0.5: Cleanup pattern store
+          await this.cleanupNervousSystem(); // Wave 7: Cleanup nervous system
+          await this.cleanupNetworkPolicy(); // SP-3: Cleanup network policy
+          await this.cleanupSandbox(); // SP-1: Cleanup sandbox container
           this.coordinator.clearAllHandlers();
         },
         onPostTermination: async () => {
@@ -558,7 +709,7 @@ export abstract class BaseAgent extends EventEmitter {
 
   /** @deprecated v2.2.0 - AgentDB removed. Use SwarmMemoryManager. */
   public async initializeAgentDB(_config: Partial<AgentDBConfig>): Promise<void> {
-    console.warn(`[${this.agentId.id}] AgentDB is DEPRECATED`);
+    this.logger.warn(`[${this.agentId.id}] AgentDB is DEPRECATED`);
   }
   /** @deprecated v2.2.0 */
   public async getAgentDBStatus(): Promise<null> { return null; }
@@ -660,7 +811,7 @@ export abstract class BaseAgent extends EventEmitter {
     const result = await this.hookManager.executePostTaskValidation({ task: data.assignment.task.type, result: taskResult });
 
     if (!result.valid) {
-      console.warn(`Post-task validation warning: accuracy ${result.accuracy}`);
+      this.logger.warn(`Post-task validation warning: accuracy ${result.accuracy}`);
     }
 
     if (this.strategies.lifecycle.onPostTask) await this.strategies.lifecycle.onPostTask(data);
@@ -719,7 +870,7 @@ export abstract class BaseAgent extends EventEmitter {
       if (typeof (this as any)[method] === 'function') await (this as any)[method](data);
     } catch (error) {
       // Use warn - hooks are optional and failures shouldn't break agent operation
-      console.warn(`Hook ${hookName} failed:`, error);
+      this.logger.warn(`Hook ${hookName} failed:`, error);
     }
   }
 
@@ -786,7 +937,7 @@ export abstract class BaseAgent extends EventEmitter {
    */
   private async initializeLLMProvider(): Promise<void> {
     if (!this.llmConfig.enabled) {
-      console.log(`[${this.agentId.id}] LLM disabled by configuration`);
+      this.logger.info(`[${this.agentId.id}] LLM disabled by configuration`);
       return;
     }
 
@@ -794,7 +945,7 @@ export abstract class BaseAgent extends EventEmitter {
       // If a provider was injected, use it directly
       if (this.llmConfig.provider) {
         this.llmProvider = this.llmConfig.provider;
-        console.log(`[${this.agentId.id}] Using injected LLM provider`);
+        this.logger.info(`[${this.agentId.id}] Using injected LLM provider`);
 
         // Phase 1.2.2: Create agentLLM wrapper for simplified API
         this.agentLLM = createAgentLLM(this.llmProvider, {
@@ -835,7 +986,7 @@ export abstract class BaseAgent extends EventEmitter {
         await this.hybridRouter.initialize();
         this.llmProvider = this.hybridRouter;
 
-        console.log(`[${this.agentId.id}] HybridRouter initialized with RuVector GNN cache`);
+        this.logger.info(`[${this.agentId.id}] HybridRouter initialized with RuVector GNN cache`);
 
         // Phase 1.2.2: Create agentLLM wrapper for simplified API
         this.agentLLM = createAgentLLM(this.llmProvider, {
@@ -865,10 +1016,10 @@ export abstract class BaseAgent extends EventEmitter {
           const ruvllm = this.llmProvider as RuvllmProvider;
           const session = ruvllm.createSession();
           this.llmSessionId = session.id;
-          console.log(`[${this.agentId.id}] LLM session created: ${this.llmSessionId}`);
+          this.logger.info(`[${this.agentId.id}] LLM session created: ${this.llmSessionId}`);
         }
 
-        console.log(`[${this.agentId.id}] RuvLLM provider initialized`);
+        this.logger.info(`[${this.agentId.id}] RuvLLM provider initialized`);
 
         // Phase 1.2.2: Create agentLLM wrapper for simplified API
         this.agentLLM = createAgentLLM(this.llmProvider, {
@@ -885,12 +1036,12 @@ export abstract class BaseAgent extends EventEmitter {
       this.llmProvider = this.llmFactory.getProvider(this.llmConfig.preferredProvider as ProviderType);
 
       if (!this.llmProvider) {
-        console.warn(`[${this.agentId.id}] Preferred provider ${this.llmConfig.preferredProvider} not available, trying auto-select`);
+        this.logger.warn(`[${this.agentId.id}] Preferred provider ${this.llmConfig.preferredProvider} not available, trying auto-select`);
         this.llmProvider = this.llmFactory.selectBestProvider();
       }
 
       if (this.llmProvider) {
-        console.log(`[${this.agentId.id}] LLM provider initialized: ${this.llmConfig.preferredProvider}`);
+        this.logger.info(`[${this.agentId.id}] LLM provider initialized: ${this.llmConfig.preferredProvider}`);
 
         // Phase 1.2.2: Create agentLLM wrapper for simplified API
         this.agentLLM = createAgentLLM(this.llmProvider, {
@@ -898,11 +1049,11 @@ export abstract class BaseAgent extends EventEmitter {
           defaultModel: this.llmConfig.ruvllm?.defaultModel,
         });
       } else {
-        console.warn(`[${this.agentId.id}] No LLM provider available`);
+        this.logger.warn(`[${this.agentId.id}] No LLM provider available`);
       }
     } catch (error) {
       // Use warn instead of error - this is expected fallback behavior, not a failure
-      console.warn(`[${this.agentId.id}] LLM initialization failed:`, (error as Error).message);
+      this.logger.warn(`[${this.agentId.id}] LLM initialization failed:`, (error as Error).message);
       // Don't throw - agent can still work without LLM (algorithmic fallback)
     }
   }
@@ -929,18 +1080,18 @@ export abstract class BaseAgent extends EventEmitter {
       this.ephemeralAgent = this.federatedManager.registerAgent(this.agentId.id);
       this.federatedInitialized = true;
 
-      console.log(`[${this.agentId.id}] Federated learning initialized`);
+      this.logger.info(`[${this.agentId.id}] Federated learning initialized`);
 
       // Sync with existing team knowledge on startup
       try {
         await this.federatedManager.syncFromTeam(this.agentId.id);
-        console.log(`[${this.agentId.id}] Synced with team knowledge`);
+        this.logger.info(`[${this.agentId.id}] Synced with team knowledge`);
       } catch {
         // First agent or no prior knowledge - expected
       }
     } catch (error) {
       // Use warn instead of error - this is expected fallback behavior
-      console.warn(`[${this.agentId.id}] Federated learning initialization failed:`, (error as Error).message);
+      this.logger.warn(`[${this.agentId.id}] Federated learning initialization failed:`, (error as Error).message);
       // Don't throw - agent can work without federated learning
     }
   }
@@ -1120,7 +1271,7 @@ export abstract class BaseAgent extends EventEmitter {
     }
 
     // Fallback: sequential processing for non-batch providers
-    console.warn(`[${this.agentId.id}] Provider doesn't support batch, using sequential`);
+    this.logger.warn(`[${this.agentId.id}] Provider doesn't support batch, using sequential`);
     const results: string[] = [];
     for (const prompt of prompts) {
       results.push(await this.llmComplete(prompt, options));
@@ -1392,7 +1543,7 @@ export abstract class BaseAgent extends EventEmitter {
    */
   private async initializePatternStore(): Promise<void> {
     if (!this.qePatternConfig.enabled) {
-      console.log(`[${this.agentId.id}] QE Pattern Store disabled by configuration`);
+      this.logger.info(`[${this.agentId.id}] QE Pattern Store disabled by configuration`);
       return;
     }
 
@@ -1434,10 +1585,10 @@ export abstract class BaseAgent extends EventEmitter {
           await this.qePatternStore!.initialize();
           this.patternStoreInitialized = true;
 
-          console.log(`[${this.agentId.id}] QE Pattern Store initialized (RuVector PostgreSQL: enabled)`);
+          this.logger.info(`[${this.agentId.id}] QE Pattern Store initialized (RuVector PostgreSQL: enabled)`);
           return;
         } catch (postgresError) {
-          console.warn(`[${this.agentId.id}] RuVector PostgreSQL unavailable, falling back to HNSW:`, (postgresError as Error).message);
+          this.logger.warn(`[${this.agentId.id}] RuVector PostgreSQL unavailable, falling back to HNSW:`, (postgresError as Error).message);
           // Fall through to HNSW fallback
         }
       }
@@ -1476,9 +1627,9 @@ export abstract class BaseAgent extends EventEmitter {
       await this.qePatternStore!.initialize();
       this.patternStoreInitialized = true;
 
-      console.log(`[${this.agentId.id}] QE Pattern Store initialized (HNSW fallback)`);
+      this.logger.info(`[${this.agentId.id}] QE Pattern Store initialized (HNSW fallback)`);
     } catch (error) {
-      console.warn(`[${this.agentId.id}] Pattern Store initialization failed:`, (error as Error).message);
+      this.logger.warn(`[${this.agentId.id}] Pattern Store initialization failed:`, (error as Error).message);
       // Don't throw - agent can work without pattern store
     }
   }
@@ -1539,7 +1690,7 @@ export abstract class BaseAgent extends EventEmitter {
       await this.qePatternStore!.storePattern(testPattern);
       return { success: true };
     } catch (error) {
-      console.warn(`[${this.agentId.id}] Failed to store QE pattern:`, (error as Error).message);
+      this.logger.warn(`[${this.agentId.id}] Failed to store QE pattern:`, (error as Error).message);
       return { success: false };
     }
   }
@@ -1583,7 +1734,7 @@ export abstract class BaseAgent extends EventEmitter {
 
       return results;
     } catch (error) {
-      console.warn(`[${this.agentId.id}] Pattern search failed:`, (error as Error).message);
+      this.logger.warn(`[${this.agentId.id}] Pattern search failed:`, (error as Error).message);
       return [];
     }
   }
@@ -1660,7 +1811,7 @@ export abstract class BaseAgent extends EventEmitter {
 
       return metrics;
     } catch (error) {
-      console.warn(`[${this.agentId.id}] Failed to get pattern metrics:`, (error as Error).message);
+      this.logger.warn(`[${this.agentId.id}] Failed to get pattern metrics:`, (error as Error).message);
       return null;
     }
   }
@@ -1680,10 +1831,10 @@ export abstract class BaseAgent extends EventEmitter {
 
     try {
       const result = await this.qePatternStore!.syncToRemote(options);
-      console.log(`[${this.agentId.id}] Synced ${result.synced} patterns to remote (${result.duration}ms)`);
+      this.logger.info(`[${this.agentId.id}] Synced ${result.synced} patterns to remote (${result.duration}ms)`);
       return result;
     } catch (error) {
-      console.warn(`[${this.agentId.id}] Pattern sync failed:`, (error as Error).message);
+      this.logger.warn(`[${this.agentId.id}] Pattern sync failed:`, (error as Error).message);
       return { synced: 0, failed: 0, duration: 0 };
     }
   }
@@ -1711,7 +1862,7 @@ export abstract class BaseAgent extends EventEmitter {
         duration: result.duration,
       };
     } catch (error) {
-      console.warn(`[${this.agentId.id}] Force learning failed:`, (error as Error).message);
+      this.logger.warn(`[${this.agentId.id}] Force learning failed:`, (error as Error).message);
       return { success: false, patternsConsolidated: 0, duration: 0 };
     }
   }
@@ -1735,9 +1886,9 @@ export abstract class BaseAgent extends EventEmitter {
         await this.qePatternStore.shutdown();
       }
 
-      console.log(`[${this.agentId.id}] Pattern Store cleanup complete`);
+      this.logger.info(`[${this.agentId.id}] Pattern Store cleanup complete`);
     } catch (error) {
-      console.warn(`[${this.agentId.id}] Pattern Store cleanup error:`, (error as Error).message);
+      this.logger.warn(`[${this.agentId.id}] Pattern Store cleanup error:`, (error as Error).message);
     }
 
     this.patternStoreInitialized = false;
@@ -1752,7 +1903,7 @@ export abstract class BaseAgent extends EventEmitter {
       const ruvllm = this.llmProvider as RuvllmProvider;
       if (typeof ruvllm.endSession === 'function') {
         ruvllm.endSession(this.llmSessionId);
-        console.log(`[${this.agentId.id}] LLM session ended: ${this.llmSessionId}`);
+        this.logger.info(`[${this.agentId.id}] LLM session ended: ${this.llmSessionId}`);
       }
     }
 
@@ -1781,7 +1932,7 @@ export abstract class BaseAgent extends EventEmitter {
 
     // Require both searchEngine and graphBuilder
     if (!this.codeIntelligenceConfig.searchEngine || !this.codeIntelligenceConfig.graphBuilder) {
-      console.warn(`[${this.agentId.id}] Code Intelligence requires both searchEngine and graphBuilder`);
+      this.logger.warn(`[${this.agentId.id}] Code Intelligence requires both searchEngine and graphBuilder`);
       return;
     }
 
@@ -1794,9 +1945,9 @@ export abstract class BaseAgent extends EventEmitter {
         defaultCacheTTL: 5 * 60 * 1000, // 5 minutes
       });
 
-      console.log(`[${this.agentId.id}] Code Intelligence context builder initialized`);
+      this.logger.info(`[${this.agentId.id}] Code Intelligence context builder initialized`);
     } catch (error) {
-      console.warn(`[${this.agentId.id}] Code Intelligence initialization failed:`, (error as Error).message);
+      this.logger.warn(`[${this.agentId.id}] Code Intelligence initialization failed:`, (error as Error).message);
       // Don't throw - agent can work without code intelligence
     }
   }
@@ -1833,7 +1984,7 @@ export abstract class BaseAgent extends EventEmitter {
 
       return await this.codeIntelligenceContextBuilder.buildContext(queryWithAgent, options);
     } catch (error) {
-      console.warn(`[${this.agentId.id}] Context retrieval failed:`, (error as Error).message);
+      this.logger.warn(`[${this.agentId.id}] Context retrieval failed:`, (error as Error).message);
       return null;
     }
   }
@@ -1852,7 +2003,7 @@ export abstract class BaseAgent extends EventEmitter {
     try {
       return await this.codeIntelligenceContextBuilder.buildFileContext(filePath, options);
     } catch (error) {
-      console.warn(`[${this.agentId.id}] File context retrieval failed:`, (error as Error).message);
+      this.logger.warn(`[${this.agentId.id}] File context retrieval failed:`, (error as Error).message);
       return null;
     }
   }
@@ -1876,7 +2027,7 @@ export abstract class BaseAgent extends EventEmitter {
         options
       );
     } catch (error) {
-      console.warn(`[${this.agentId.id}] Entity context retrieval failed:`, (error as Error).message);
+      this.logger.warn(`[${this.agentId.id}] Entity context retrieval failed:`, (error as Error).message);
       return null;
     }
   }
@@ -1895,7 +2046,7 @@ export abstract class BaseAgent extends EventEmitter {
     try {
       return await this.codeIntelligenceContextBuilder.buildTestContext(sourceFilePath, options);
     } catch (error) {
-      console.warn(`[${this.agentId.id}] Test context retrieval failed:`, (error as Error).message);
+      this.logger.warn(`[${this.agentId.id}] Test context retrieval failed:`, (error as Error).message);
       return null;
     }
   }
@@ -1932,9 +2083,9 @@ export abstract class BaseAgent extends EventEmitter {
 
       // Unregister this agent from federated learning
       this.federatedManager.unregisterAgent(this.agentId.id);
-      console.log(`[${this.agentId.id}] Federated learning cleanup complete`);
+      this.logger.info(`[${this.agentId.id}] Federated learning cleanup complete`);
     } catch (error) {
-      console.warn(`[${this.agentId.id}] Federated cleanup error:`, (error as Error).message);
+      this.logger.warn(`[${this.agentId.id}] Federated cleanup error:`, (error as Error).message);
     }
 
     this.federatedInitialized = false;
@@ -1945,6 +2096,736 @@ export abstract class BaseAgent extends EventEmitter {
       await this.federatedManager.shutdown();
       this.federatedManager = undefined;
     }
+  }
+
+  // ============================================
+  // Nervous System Methods (Wave 7 - Bio-Inspired Intelligence)
+  // ============================================
+
+  /**
+   * Initialize Nervous System for bio-inspired intelligence
+   *
+   * Enables:
+   * - HDC-accelerated pattern storage (50ns binding operations)
+   * - BTSP one-shot learning from failures (vs 10+ examples with RL)
+   * - Global Workspace attention coordination (Miller's Law: 7±2 items)
+   * - Circadian duty cycling (5-50x compute savings)
+   */
+  private async initializeNervousSystem(): Promise<void> {
+    if (!this.nervousSystemConfig) {
+      return;
+    }
+
+    // Skip if no features are enabled
+    const hasEnabledFeature =
+      this.nervousSystemConfig.enableHdcPatterns ||
+      this.nervousSystemConfig.enableOneShotLearning ||
+      this.nervousSystemConfig.enableWorkspaceCoordination ||
+      this.nervousSystemConfig.enableCircadianCycling;
+
+    if (!hasEnabledFeature) {
+      return;
+    }
+
+    try {
+      // Enhance this agent with nervous system capabilities
+      const enhanced = await enhanceWithNervousSystem(this, this.nervousSystemConfig);
+
+      // Store the methods for access
+      this.nervousSystemMethods = enhanced;
+      this.nervousSystemEnhanced = true;
+
+      this.logger.info(`[${this.agentId.id}] Nervous System initialized with: ` +
+        `HDC=${!!this.nervousSystemConfig.enableHdcPatterns}, ` +
+        `BTSP=${!!this.nervousSystemConfig.enableOneShotLearning}, ` +
+        `Workspace=${!!this.nervousSystemConfig.enableWorkspaceCoordination}, ` +
+        `Circadian=${!!this.nervousSystemConfig.enableCircadianCycling}`
+      );
+
+      // Wave 7.1: Initialize persistence and restore prior state
+      try {
+        this.nervousSystemPersistence = await getSharedPersistenceManager();
+        await restoreNervousSystemState(this, this.nervousSystemPersistence);
+        this.logger.debug(`[${this.agentId.id}] Nervous System state restored from persistence`);
+      } catch (persistError) {
+        this.logger.debug(`[${this.agentId.id}] No prior nervous system state to restore:`, (persistError as Error).message);
+        // Not an error - agent starts with fresh state
+      }
+    } catch (error) {
+      this.logger.warn(`[${this.agentId.id}] Nervous System initialization failed:`, (error as Error).message);
+      // Don't throw - agent can work without nervous system (graceful degradation)
+    }
+  }
+
+  /**
+   * Check if nervous system is enabled
+   */
+  public hasNervousSystem(): boolean {
+    return this.nervousSystemEnhanced && this.nervousSystemMethods !== undefined;
+  }
+
+  /**
+   * Get nervous system statistics
+   *
+   * Returns comprehensive stats for HDC patterns, BTSP learning,
+   * workspace coordination, and circadian cycling.
+   */
+  public getNervousSystemStats(): NervousSystemStats | null {
+    if (!this.nervousSystemMethods) {
+      return null;
+    }
+    return this.nervousSystemMethods.getNervousSystemStats();
+  }
+
+  // === HDC Pattern Methods ===
+
+  /**
+   * Store a pattern using HDC acceleration (50ns binding)
+   *
+   * Uses Hyperdimensional Computing for sub-microsecond pattern binding,
+   * enabling 1000x faster pattern storage than traditional methods.
+   *
+   * @param pattern - The test pattern to store
+   */
+  protected async storePatternHdc(pattern: TestPattern): Promise<void> {
+    if (!this.nervousSystemMethods?.storePatternHdc) {
+      throw new Error(`[${this.agentId.id}] HDC Pattern Store not available - enable nervousSystem.enableHdcPatterns`);
+    }
+    await this.nervousSystemMethods.storePatternHdc(pattern);
+  }
+
+  /**
+   * Search patterns using HDC acceleration
+   *
+   * Uses hypervector similarity for pre-filtering, then HNSW for precision.
+   * Achieves O(1) candidate selection vs O(log n) for pure HNSW.
+   *
+   * @param embedding - Query embedding vector
+   * @param k - Number of results to return
+   * @returns Array of matching patterns with similarity scores
+   */
+  protected async searchPatternsHdc(embedding: number[], k: number = 10): Promise<PatternSearchResult[]> {
+    if (!this.nervousSystemMethods?.searchPatternsHdc) {
+      return [];
+    }
+    return this.nervousSystemMethods.searchPatternsHdc(embedding, k);
+  }
+
+  // === BTSP One-Shot Learning Methods ===
+
+  /**
+   * Learn from a single task failure using BTSP (Behavioral Timescale Synaptic Plasticity)
+   *
+   * Unlike traditional RL which requires 10+ examples, BTSP enables one-shot learning
+   * from a single failure, dramatically reducing time-to-learning.
+   *
+   * @param failure - Information about the task failure
+   */
+  protected async learnOneShot(failure: TaskFailure): Promise<void> {
+    if (!this.nervousSystemMethods?.learnOneShot) {
+      throw new Error(`[${this.agentId.id}] BTSP Learning not available - enable nervousSystem.enableOneShotLearning`);
+    }
+    await this.nervousSystemMethods.learnOneShot(failure);
+  }
+
+  /**
+   * Recall a strategy based on task state using BTSP associative memory
+   *
+   * Uses one-shot learned patterns for instant strategy recall with
+   * high confidence (vs gradual Q-value learning).
+   *
+   * @param state - Current task state
+   * @returns Strategy recommendation or null if no match
+   */
+  protected async recallStrategy(state: TaskState): Promise<NervousSystemStrategyRecommendation | null> {
+    if (!this.nervousSystemMethods?.recallStrategy) {
+      return null;
+    }
+    return this.nervousSystemMethods.recallStrategy(state);
+  }
+
+  // === Workspace Coordination Methods ===
+
+  /**
+   * Broadcast an item to the Global Workspace for attention competition
+   *
+   * Uses biological Global Workspace Theory where only 7±2 items can
+   * occupy conscious attention at once, enabling focused coordination.
+   *
+   * @param item - The workspace item to broadcast
+   * @returns Whether broadcast succeeded
+   */
+  protected async broadcastToWorkspace(item: WorkspaceItem): Promise<boolean> {
+    if (!this.nervousSystemMethods?.broadcastToWorkspace) {
+      return false;
+    }
+    return this.nervousSystemMethods.broadcastToWorkspace(item);
+  }
+
+  /**
+   * Get items currently in the workspace relevant to this agent
+   *
+   * @returns Array of workspace items
+   */
+  protected async getWorkspaceItems(): Promise<AgentWorkspaceItem[]> {
+    if (!this.nervousSystemMethods?.getWorkspaceItems) {
+      return [];
+    }
+    return this.nervousSystemMethods.getWorkspaceItems();
+  }
+
+  /**
+   * Check if this agent currently has attention in the Global Workspace
+   *
+   * Agents with attention should proceed with full execution.
+   * Agents without attention should defer or reduce activity.
+   *
+   * @returns Whether this agent has attention
+   */
+  protected async hasAttention(): Promise<boolean> {
+    if (!this.nervousSystemMethods?.hasAttention) {
+      return true; // Default to true if workspace not enabled
+    }
+    return this.nervousSystemMethods.hasAttention();
+  }
+
+  // === Circadian Cycling Methods ===
+
+  /**
+   * Get current circadian phase (Active, Dawn, Dusk, Rest)
+   *
+   * Agents should adjust behavior based on phase:
+   * - Active: Full compute operations
+   * - Dawn/Dusk: Transition states
+   * - Rest: Minimal activity for 5-50x compute savings
+   */
+  public getCurrentPhase(): CircadianPhase {
+    if (!this.nervousSystemMethods?.getCurrentPhase) {
+      return 'Active'; // Default to active if circadian not enabled
+    }
+    return this.nervousSystemMethods.getCurrentPhase();
+  }
+
+  /**
+   * Check if agent should be active based on circadian phase and criticality
+   *
+   * Critical agents stay active even during rest phase.
+   * Non-critical agents can sleep for compute savings.
+   *
+   * @returns Whether agent should be active
+   */
+  public shouldBeActive(): boolean {
+    if (!this.nervousSystemMethods?.shouldBeActive) {
+      return true; // Default to active if circadian not enabled
+    }
+    return this.nervousSystemMethods.shouldBeActive();
+  }
+
+  /**
+   * Get energy savings report from circadian cycling
+   *
+   * Shows saved compute cycles, total rest time, and cost reduction factor.
+   */
+  public getEnergySavings(): EnergySavingsReport {
+    if (!this.nervousSystemMethods?.getEnergySavings) {
+      return {
+        savedCycles: 0,
+        savingsPercentage: 0,
+        totalRestTime: 0,
+        totalActiveTime: 0,
+        averageDutyFactor: 1,
+        costReductionFactor: 1,
+      };
+    }
+    return this.nervousSystemMethods.getEnergySavings();
+  }
+
+  /**
+   * Cleanup nervous system resources on agent termination
+   */
+  private async cleanupNervousSystem(): Promise<void> {
+    if (!this.nervousSystemEnhanced) {
+      return;
+    }
+
+    try {
+      // Wave 7.1: Save nervous system state before cleanup
+      if (this.nervousSystemPersistence) {
+        try {
+          await saveNervousSystemState(this, this.nervousSystemPersistence);
+          this.logger.info(`[${this.agentId.id}] Nervous System state saved to persistence`);
+        } catch (saveError) {
+          this.logger.warn(`[${this.agentId.id}] Failed to save nervous system state:`, (saveError as Error).message);
+        }
+      }
+
+      // The enhancement uses WeakMap, so cleanup happens automatically
+      // when agent reference is garbage collected. We just need to clear our flags.
+      this.nervousSystemMethods = undefined;
+      this.nervousSystemEnhanced = false;
+      this.nervousSystemPersistence = undefined;
+      this.logger.info(`[${this.agentId.id}] Nervous System cleanup complete`);
+    } catch (error) {
+      this.logger.warn(`[${this.agentId.id}] Nervous System cleanup error:`, (error as Error).message);
+    }
+  }
+
+  // ============================================
+  // Network Policy Methods (SP-3 - Issue #146)
+  // ============================================
+
+  /**
+   * Initialize Network Policy Manager for domain whitelisting and rate limiting
+   * Provides security hardening for agent network access
+   */
+  private async initializeNetworkPolicy(): Promise<void> {
+    if (this.networkPolicyConfig.enabled === false) {
+      this.logger.info(`[${this.agentId.id}] Network Policy disabled by configuration`);
+      return;
+    }
+
+    try {
+      // Use shared manager if provided, otherwise create a new one
+      if (this.networkPolicyConfig.sharedManager) {
+        this.networkPolicyManager = this.networkPolicyConfig.sharedManager;
+        this.networkPolicyOwned = false;
+      } else {
+        this.networkPolicyManager = createNetworkPolicyManager({
+          enableAuditLogging: this.networkPolicyConfig.enableAuditLogging ?? true,
+          debug: this.networkPolicyConfig.debug ?? false,
+        });
+        await this.networkPolicyManager.initialize();
+        this.networkPolicyOwned = true;
+      }
+
+      // Apply any policy overrides for this agent type
+      if (this.networkPolicyConfig.policyOverrides) {
+        this.networkPolicyManager.updatePolicy(
+          this.agentId.type,
+          this.networkPolicyConfig.policyOverrides
+        );
+      }
+
+      this.networkPolicyInitialized = true;
+      this.logger.info(`[${this.agentId.id}] Network Policy initialized (owned: ${this.networkPolicyOwned})`);
+    } catch (error) {
+      this.logger.warn(`[${this.agentId.id}] Network Policy initialization failed:`, (error as Error).message);
+      // Don't throw - agent can work without network policy (graceful degradation)
+    }
+  }
+
+  /**
+   * Check if network policy enforcement is available
+   */
+  public hasNetworkPolicy(): boolean {
+    return this.networkPolicyInitialized && this.networkPolicyManager !== undefined;
+  }
+
+  /**
+   * Get the network policy for this agent type
+   */
+  public getNetworkPolicy(): NetworkPolicy {
+    if (!this.networkPolicyManager) {
+      return getNetworkPolicy(this.agentId.type);
+    }
+    return this.networkPolicyManager.getPolicy(this.agentId.type);
+  }
+
+  /**
+   * Check if a network request to a domain is allowed
+   * Does NOT consume rate limit tokens - use for pre-flight checks
+   *
+   * @param domain - The target domain (e.g., "api.anthropic.com")
+   * @returns PolicyCheckResult with allowed status and details
+   */
+  protected async checkNetworkRequest(domain: string): Promise<PolicyCheckResult> {
+    if (!this.networkPolicyManager) {
+      // No policy enforcement - allow all
+      return {
+        allowed: true,
+        policy: getNetworkPolicy(this.agentId.type),
+      };
+    }
+
+    return this.networkPolicyManager.checkRequest(
+      this.agentId.id,
+      this.agentId.type,
+      domain
+    );
+  }
+
+  /**
+   * Record a network request (consumes rate limit token)
+   * Call this after making an actual network request
+   *
+   * @param domain - The target domain
+   * @param allowed - Whether the request was allowed
+   * @param responseTimeMs - Response time in milliseconds (optional)
+   */
+  protected async recordNetworkRequest(
+    domain: string,
+    allowed: boolean,
+    responseTimeMs?: number
+  ): Promise<void> {
+    if (!this.networkPolicyManager) {
+      return;
+    }
+
+    await this.networkPolicyManager.recordRequest(
+      this.agentId.id,
+      this.agentId.type,
+      domain,
+      allowed,
+      responseTimeMs
+    );
+  }
+
+  /**
+   * Make a policy-enforced network request
+   * Checks domain whitelist and rate limits before allowing the request
+   *
+   * @param url - The full URL to request
+   * @param requestFn - Function that performs the actual request
+   * @returns The result of requestFn if allowed
+   * @throws Error if request is blocked by policy
+   *
+   * @example
+   * ```typescript
+   * const response = await this.makeNetworkRequest(
+   *   'https://api.anthropic.com/v1/messages',
+   *   async () => fetch('https://api.anthropic.com/v1/messages', { method: 'POST', ... })
+   * );
+   * ```
+   */
+  protected async makeNetworkRequest<T>(
+    url: string,
+    requestFn: () => Promise<T>
+  ): Promise<T> {
+    // Extract domain from URL
+    let domain: string;
+    try {
+      const parsedUrl = new URL(url);
+      domain = parsedUrl.hostname;
+    } catch {
+      throw new Error(`Invalid URL: ${url}`);
+    }
+
+    // Check if request is allowed
+    const check = await this.checkNetworkRequest(domain);
+    if (!check.allowed) {
+      const error = new Error(
+        `Network request blocked: ${check.reason} - ${check.details || domain}`
+      );
+      (error as any).policyCheckResult = check;
+      throw error;
+    }
+
+    // Make the actual request
+    const startTime = Date.now();
+    try {
+      const result = await requestFn();
+      const responseTime = Date.now() - startTime;
+      await this.recordNetworkRequest(domain, true, responseTime);
+      return result;
+    } catch (error) {
+      const responseTime = Date.now() - startTime;
+      await this.recordNetworkRequest(domain, false, responseTime);
+      throw error;
+    }
+  }
+
+  /**
+   * Get rate limit status for this agent
+   */
+  public getNetworkRateLimitStatus(): RateLimitStatus | null {
+    if (!this.networkPolicyManager) {
+      return null;
+    }
+    return this.networkPolicyManager.getRateLimitStatus(this.agentId.id, this.agentId.type);
+  }
+
+  /**
+   * Get network audit statistics
+   * @param since - Optional start date for stats
+   */
+  public async getNetworkAuditStats(since?: Date): Promise<AuditStats | null> {
+    if (!this.networkPolicyManager) {
+      return null;
+    }
+    return this.networkPolicyManager.getAuditStats(since);
+  }
+
+  /**
+   * Get network policy statistics for this agent
+   */
+  public getNetworkPolicyStats(): {
+    enabled: boolean;
+    policy?: NetworkPolicy;
+    rateLimitStatus?: RateLimitStatus | null;
+  } {
+    if (!this.hasNetworkPolicy()) {
+      return { enabled: false };
+    }
+
+    return {
+      enabled: true,
+      policy: this.getNetworkPolicy(),
+      rateLimitStatus: this.getNetworkRateLimitStatus(),
+    };
+  }
+
+  /**
+   * Cleanup network policy resources on agent termination
+   */
+  private async cleanupNetworkPolicy(): Promise<void> {
+    if (!this.networkPolicyInitialized) {
+      return;
+    }
+
+    try {
+      // Only shutdown if we own the manager (not shared)
+      if (this.networkPolicyOwned && this.networkPolicyManager) {
+        await this.networkPolicyManager.shutdown();
+        this.logger.info(`[${this.agentId.id}] Network Policy cleanup complete`);
+      }
+    } catch (error) {
+      this.logger.warn(`[${this.agentId.id}] Network Policy cleanup error:`, (error as Error).message);
+    }
+
+    this.networkPolicyInitialized = false;
+    this.networkPolicyManager = undefined;
+  }
+
+  // ============================================
+  // Sandbox Infrastructure Methods (SP-1 - Issue #146)
+  // ============================================
+
+  /**
+   * Initialize Sandbox Manager for Docker-based agent isolation
+   * Provides secure, isolated execution environments with resource limits
+   */
+  private async initializeSandbox(): Promise<void> {
+    if (this.sandboxConfig.enabled === false) {
+      this.logger.debug(`[${this.agentId.id}] Sandbox disabled by configuration`);
+      return;
+    }
+
+    try {
+      // Use shared manager if provided, otherwise create a new one
+      if (this.sandboxConfig.sharedManager) {
+        this.sandboxManager = this.sandboxConfig.sharedManager;
+        this.sandboxOwned = false;
+      } else {
+        this.sandboxManager = createSandboxManager({
+          agentImage: process.env.AQE_SANDBOX_IMAGE || 'agentic-qe-agent',
+          imageTag: process.env.AQE_SANDBOX_TAG || 'latest',
+          cleanupOnShutdown: true,
+        });
+        await this.sandboxManager.initialize();
+        this.sandboxOwned = true;
+      }
+
+      // Auto-create sandbox container if configured
+      if (this.sandboxConfig.autoCreateSandbox !== false) {
+        const result = await this.createSandboxContainer();
+        if (result.success && result.container) {
+          this.containerId = result.container.containerId;
+        } else if (!result.success) {
+          // Docker not available - graceful degradation
+          this.logger.info(`[${this.agentId.id}] Sandbox container creation skipped: ${result.error}`);
+        }
+      }
+
+      this.sandboxInitialized = true;
+      this.logger.info(`[${this.agentId.id}] Sandbox initialized (owned: ${this.sandboxOwned}, container: ${this.containerId || 'none'})`);
+    } catch (error) {
+      this.logger.warn(`[${this.agentId.id}] Sandbox initialization failed:`, (error as Error).message);
+      // Don't throw - agent can work without sandbox (graceful degradation)
+    }
+  }
+
+  /**
+   * Check if sandbox isolation is available
+   */
+  public hasSandbox(): boolean {
+    return this.sandboxInitialized && this.sandboxManager !== undefined;
+  }
+
+  /**
+   * Check if agent is running in a sandbox container
+   */
+  public isInSandbox(): boolean {
+    return this.containerId !== undefined;
+  }
+
+  /**
+   * Get the container ID if running in sandbox
+   */
+  public getContainerId(): string | undefined {
+    return this.containerId;
+  }
+
+  /**
+   * Get sandbox configuration for this agent type
+   */
+  public getSandboxConfig(): Partial<SandboxConfig> {
+    return getAgentSandboxConfig(this.agentId.type);
+  }
+
+  /**
+   * Create a sandbox container for this agent
+   * @param customConfig - Optional custom sandbox configuration
+   */
+  protected async createSandboxContainer(
+    customConfig?: Partial<SandboxConfig>
+  ): Promise<SandboxCreateResult> {
+    if (!this.sandboxManager) {
+      return {
+        success: false,
+        error: 'Sandbox manager not initialized',
+      };
+    }
+
+    // Check if Docker is available
+    const dockerAvailable = await this.sandboxManager.isDockerAvailable();
+    if (!dockerAvailable) {
+      return {
+        success: false,
+        error: 'Docker not available',
+      };
+    }
+
+    // Merge profile config with any overrides
+    const mergedConfig = {
+      ...this.sandboxConfig.sandboxOverrides,
+      ...customConfig,
+    };
+
+    return this.sandboxManager.createSandbox(
+      this.agentId.id,
+      this.agentId.type,
+      mergedConfig
+    );
+  }
+
+  /**
+   * Get resource usage for the sandbox container
+   */
+  public async getSandboxResourceUsage(): Promise<ResourceStats | null> {
+    if (!this.sandboxManager || !this.containerId) {
+      return null;
+    }
+    return this.sandboxManager.getResourceUsage(this.containerId);
+  }
+
+  /**
+   * Check sandbox container health
+   */
+  public async checkSandboxHealth(): Promise<HealthCheckResult | null> {
+    if (!this.sandboxManager || !this.containerId) {
+      return null;
+    }
+    return this.sandboxManager.healthCheck(this.containerId);
+  }
+
+  /**
+   * Execute a command in the sandbox container
+   * @param command - Command to execute as array of strings
+   */
+  protected async execInSandbox(
+    command: string[]
+  ): Promise<{ exitCode: number; output: string } | null> {
+    if (!this.sandboxManager || !this.containerId) {
+      return null;
+    }
+    return this.sandboxManager.exec(this.containerId, command);
+  }
+
+  /**
+   * Get sandbox container logs
+   * @param options - Log retrieval options
+   */
+  protected async getSandboxLogs(
+    options?: { tail?: number; since?: number }
+  ): Promise<string | null> {
+    if (!this.sandboxManager || !this.containerId) {
+      return null;
+    }
+    return this.sandboxManager.getLogs(this.containerId, options);
+  }
+
+  /**
+   * Subscribe to sandbox events
+   * @param handler - Event handler function
+   */
+  public onSandboxEvent(handler: SandboxEventHandler): void {
+    if (this.sandboxManager) {
+      this.sandboxManager.on(handler);
+    }
+  }
+
+  /**
+   * Unsubscribe from sandbox events
+   * @param handler - Event handler to remove
+   */
+  public offSandboxEvent(handler: SandboxEventHandler): void {
+    if (this.sandboxManager) {
+      this.sandboxManager.off(handler);
+    }
+  }
+
+  /**
+   * Get sandbox statistics for this agent
+   */
+  public getSandboxStats(): {
+    enabled: boolean;
+    inSandbox: boolean;
+    containerId?: string;
+    sandboxConfig?: Partial<SandboxConfig>;
+  } {
+    if (!this.hasSandbox()) {
+      return { enabled: false, inSandbox: false };
+    }
+
+    return {
+      enabled: true,
+      inSandbox: this.isInSandbox(),
+      containerId: this.containerId,
+      sandboxConfig: this.getSandboxConfig(),
+    };
+  }
+
+  /**
+   * Cleanup sandbox resources on agent termination
+   */
+  private async cleanupSandbox(): Promise<void> {
+    if (!this.sandboxInitialized) {
+      return;
+    }
+
+    try {
+      // Destroy our container if we have one
+      if (this.containerId && this.sandboxManager) {
+        const result = await this.sandboxManager.destroySandbox(this.containerId, true);
+        if (result.success) {
+          this.logger.info(`[${this.agentId.id}] Sandbox container ${this.containerId} destroyed`);
+        } else {
+          this.logger.warn(`[${this.agentId.id}] Sandbox container destruction failed: ${result.error}`);
+        }
+      }
+
+      // Only shutdown manager if we own it (not shared)
+      if (this.sandboxOwned && this.sandboxManager) {
+        await this.sandboxManager.shutdown();
+        this.logger.info(`[${this.agentId.id}] Sandbox manager shutdown complete`);
+      }
+    } catch (error) {
+      this.logger.warn(`[${this.agentId.id}] Sandbox cleanup error:`, (error as Error).message);
+    }
+
+    this.sandboxInitialized = false;
+    this.sandboxManager = undefined;
+    this.containerId = undefined;
   }
 }
 
@@ -1961,3 +2842,39 @@ export abstract class BaseAgentFactory implements AgentFactory {
   abstract getSupportedTypes(): AgentType[];
   abstract getCapabilities(type: AgentType): AgentCapability[];
 }
+
+// === Nervous System Type Exports (Wave 7 - Bio-Inspired Intelligence) ===
+
+export type {
+  NervousSystemConfig,
+  NervousSystemStats,
+  TaskFailure,
+  WorkspaceItem,
+  NervousSystemStrategyRecommendation,
+  TestPattern,
+  PatternSearchResult,
+  AgentWorkspaceItem,
+  CircadianPhase,
+  EnergySavingsReport,
+};
+
+// === Network Policy Type Exports (SP-3 - Issue #146) ===
+
+export type {
+  NetworkPolicy,
+  PolicyCheckResult,
+  RateLimitStatus,
+  AuditStats,
+};
+
+// === Sandbox Infrastructure Type Exports (SP-1 - Issue #146) ===
+
+export type {
+  SandboxConfig,
+  ContainerInfo,
+  ResourceStats,
+  SandboxCreateResult,
+  HealthCheckResult,
+  SandboxEvent,
+  SandboxEventHandler,
+};

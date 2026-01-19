@@ -7,6 +7,490 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.8.2] - 2026-01-05
+
+### Added
+
+#### Security Hardening Integration (Issue #146)
+
+- **Sandbox Infrastructure (SP-1)** - Docker-based agent sandboxing
+  - `SandboxManager` for creating isolated execution environments
+  - Per-agent resource profiles (CPU, memory, network)
+  - `ResourceMonitor` for real-time container monitoring
+  - Agent profiles for all 21 QE agent types
+
+- **Embedding Cache Backends (SP-2)** - Pluggable storage for embeddings
+  - `EnhancedEmbeddingCache` with backend abstraction
+  - Memory backend (default, backward compatible)
+  - Redis backend for distributed caching
+  - SQLite backend for persistent local storage
+  - `NomicEmbedder` updated to support all backends
+
+- **Network Policy Enforcement (SP-3)** - Opt-in network controls
+  - `NetworkPolicyManager` for domain whitelisting
+  - `AgentRateLimiter` with token bucket algorithm
+  - `AuditLogger` for request tracking
+  - `DomainWhitelist` with wildcard support
+  - Permissive by default (supports multi-model router)
+  - `createRestrictivePolicy()` for opt-in security
+
+### Fixed
+
+- **Network policies now opt-in** - Default is permissive to support:
+  - Multi-model router with 15+ LLM providers
+  - QE agents testing arbitrary websites
+  - Use `createRestrictivePolicy()` for security-sensitive deployments
+
+- **CodeQL security alerts** - Fixed 4 HIGH severity issues
+  - `js/incomplete-sanitization` in SupabasePersistenceProvider
+  - Changed `.replace('*', '%')` to `.replace(/\*/g, '%')`
+  - Ensures all wildcard occurrences are replaced
+
+- **SandboxManager tests** - Converted from vitest to jest
+  - Docker-dependent tests skipped (need real Docker)
+  - Profile and utility tests all pass (22 tests)
+
+## [2.8.1] - 2026-01-04
+
+### Added
+
+#### Nervous System Integration (Major Feature)
+
+- **BTSP Learning Engine** - Behavioral Timescale Synaptic Plasticity for rapid pattern learning
+  - `BTSPLearningEngine` with spike timing detection and synaptic weight updates
+  - `BTSPAdapter` for integration with QE agent learning systems
+  - `BTSPSerializer` for persistent state management
+
+- **HDC Memory System** - Hyperdimensional Computing for pattern representation
+  - `HdcMemoryAdapter` with 10,000-dimensional hypervectors
+  - Similarity-based pattern matching with cosine distance
+  - `HdcSerializer` for state persistence
+
+- **Circadian Controller** - Time-aware agent behavior optimization
+  - `CircadianController` with 24-hour activity cycles
+  - Peak/low activity period detection for scheduling
+  - `CircadianSerializer` for rhythm persistence
+  - `CircadianAgent` wrapper for time-aware agents
+
+- **Global Workspace** - Attention-based pattern integration
+  - `GlobalWorkspaceAdapter` for multi-source attention
+  - Working memory with attention thresholds
+  - Cross-domain pattern integration
+  - `WorkspaceAgent` for workspace-aware agents
+
+- **Reflex Layer** - Immediate response patterns
+  - `ReflexLayer` with configurable thresholds
+  - Fast pattern-action mappings
+  - Priority-based response selection
+
+- **Hybrid Pattern Store** - Unified pattern management
+  - `HybridPatternStore` combining local and cloud patterns
+  - Automatic sync with Supabase
+  - Privacy-aware pattern sharing
+
+- **BaseAgent Nervous System Integration**
+  - All QE agents now benefit from nervous system components
+  - Automatic initialization via `initNervousSystem()`
+  - Pattern learning through BTSP during task execution
+  - Working memory via HDC for context retention
+  - Circadian optimization for peak performance scheduling
+
+#### Supabase Cloud Persistence
+
+- **HybridPersistenceProvider** - Local-first with cloud sync
+  - Immediate local writes with background sync
+  - Conflict resolution strategies (local/remote/newest)
+  - Offline support with sync on reconnect
+  - Queue-based sync for reliability
+
+- **SupabasePersistenceProvider** - Direct cloud storage
+  - Full CRUD for learning experiences, patterns, memory entries, events
+  - pgvector integration for semantic search
+  - HNSW indexes for fast similarity queries
+  - Row Level Security (RLS) policies
+
+- **Supabase CLI Commands** (`aqe supabase`)
+  - `aqe supabase setup` - Interactive configuration wizard
+  - `aqe supabase test` - Test connection and permissions
+  - `aqe supabase status` - Show sync status
+  - `aqe supabase sync` - Sync local data to cloud
+  - `aqe supabase sync --migrate` - One-time migration from SQLite
+  - `aqe supabase schema` - Display SQL schema for manual setup
+
+- **Migration Support**
+  - Migrate learning experiences from local SQLite to Supabase
+  - Migrate memory entries with TTL preservation
+  - Migrate patterns with original ID preservation
+  - Migrate events with timestamp conversion
+  - Handles non-UUID IDs by generating new UUIDs
+
+#### MCP Tool Handlers (Issue #188)
+
+- **RuVector GNN Cache Tools** - 6 new MCP handlers
+  - `mcp__agentic_qe__ruvector_health` - Check RuVector GNN cache health
+  - `mcp__agentic_qe__ruvector_metrics` - Get RuVector metrics
+  - `mcp__agentic_qe__ruvector_force_learn` - Force learning trigger
+  - `mcp__agentic_qe__ruvector_store_pattern` - Store patterns in cache
+  - `mcp__agentic_qe__ruvector_query_similar` - Query similar patterns
+  - `mcp__agentic_qe__ruvector_clear_cache` - Clear cache
+
+- **Additional MCP Handlers** - 6 more domain tools
+  - RuVectorHandler with full implementation
+  - NewDomainToolsHandler fixes
+
+#### GOAP Plans
+
+- **Rust Migration GOAP Plan** - Comprehensive plan for migrating core components to Rust
+- **Nervous System Integration Plan** - GOAP plan for RuVector nervous system integration
+
+### Changed
+
+- **BaseAgent** now automatically initializes nervous system components
+- Persistence layer refactored for hybrid local/cloud support
+- Improved CLI with Supabase subcommands
+
+### Fixed
+
+- RLS policy consolidation to eliminate multiple_permissive_policies warnings
+- UUID validation for pattern and event IDs during migration
+- Timestamp parsing for various date formats in migration
+
+## [2.8.0] - 2026-01-03
+
+### Added
+
+#### @ruvector/edge Integration - Phases 0-4 Complete (Major Feature)
+
+- **Phase 0: Browser Runtime**
+  - WASM shims and browser compatibility layer (`src/edge/wasm/shims.ts`)
+  - BrowserAgent with offline execution (`src/edge/browser/BrowserAgent.ts`)
+  - BrowserHNSWAdapter for vector search in browser (`src/edge/adapters/BrowserHNSWAdapter.ts`)
+  - IndexedDBStorage for persistent patterns (`src/edge/adapters/IndexedDBStorage.ts`)
+  - Chrome DevTools panel integration (`src/edge/devtools/panel.ts`)
+
+- **Phase 1: VS Code Extension MVP**
+  - Full VS Code extension with activation (`src/edge/vscode-extension/`)
+  - Real-time code analysis (FunctionExtractor, ComplexityCalculator, TestabilityScorer)
+  - Inline test suggestions (InlineTestHint, TestPreviewHover)
+  - Coverage visualization (CoverageDecorationProvider, CoverageGapVisualization)
+  - Offline-first storage (OfflineStore, SyncManager, ConflictResolver)
+  - Pattern matching engine
+
+- **Phase 2: P2P Foundation**
+  - Ed25519 cryptographic identity for secure peer verification
+  - WebRTC connection manager with ICE/STUN/TURN support
+  - SignalingServer with WebSocket for peer discovery (`src/edge/server/SignalingServer.ts`)
+  - AgentSpawnAPI with REST endpoints (`src/edge/server/AgentSpawnAPI.ts`)
+  - EdgeServer combining HTTP + WebSocket (`src/edge/server/index.ts`)
+  - P2PService with real WebRTC data channels (`src/edge/webapp/services/P2PService.ts`)
+  - Agent-to-agent communication protocol
+  - Pattern sharing via data channels
+  - CRDT-based conflict resolution
+  - NAT traversal with TURN fallback
+  - Federated learning infrastructure
+
+- **Phase 3: Web Dashboard (Browser Integration)**
+  - Full React web application with Vite build (`src/edge/webapp/`)
+  - Dashboard with dark theme (App.tsx, Dashboard.tsx)
+  - P2P connection management UI
+  - Pattern sync controls and visualization
+  - CRDT state visualizer (CRDTVisualizer)
+  - Network stats and metrics display
+  - Peer list management (PeerList, PeerListDark)
+  - Connection controls (ConnectionStatus, ConnectionControls)
+  - QE Agent Launcher - spawn agents from web UI (QEAgentLauncher)
+  - React hooks (useP2P, usePatternSync, usePeers, useConnection, useP2PService)
+  - Redux-style state management (dashboardReducer)
+
+- **Phase 4: P2P Integration with Real WebRTC Data Channels**
+  - Real WebRTC data channel communication (not mocked)
+  - P2PService with full ICE candidate exchange
+  - Pattern sync over data channels between peers
+  - Room-based peer discovery via signaling server
+  - Automatic peer connection on room join
+  - P2P connection bug fix - connect to discovered peers, not random IDs
+
+- **Edge Server REST API**
+  - `POST /api/agents/spawn` - Spawn QE agents via HTTP
+  - `GET /api/agents` - List running agents
+  - `GET /api/agents/:id` - Get agent status
+  - `GET /api/agents/:id/output` - Get agent output
+  - `DELETE /api/agents/:id` - Cancel agent
+  - `GET /api/agents/types` - List available agent types
+  - `GET /api/signaling/stats` - WebSocket signaling stats
+
+- **VS Code Extension Marketplace Preparation**
+  - Added @ruvector/edge to extension VSIX bundle
+  - EdgeAgentService with fallback mode when WASM unavailable
+  - VS Code Extension Publishing Guide (`docs/guides/vscode-extension-publishing.md`)
+  - PAT generation, publisher setup, and CI/CD integration instructions
+
+- **New Documentation**
+  - Edge Server Guide (`docs/guides/edge-server.md`)
+  - P2P Pattern Sharing Guide (`docs/guides/p2p-pattern-sharing.md`)
+  - Web Dashboard Use Cases Guide (`docs/guides/web-dashboard-use-cases.md`)
+  - Edge Dashboard Improvements Plan (`docs/plans/edge-dashboard-improvements.md`)
+  - Updated CLI agent-commands.md with spawn command
+
+- **Webapp Infrastructure**
+  - Standalone package.json for webapp (`src/edge/webapp/package.json`)
+  - Independent `npm run dev` for webapp development
+
+### Changed
+
+- **Dead Code Cleanup** (~22,000 lines removed):
+  - Integrated 8 previously unregistered MCP handlers (chaos, integration, filtered)
+  - Removed unused directories: `src/alerting/`, `src/reporting/`, `src/transport/`
+  - Removed 42 unregistered CLI command files
+  - Archived 10+ one-time verification scripts
+  - Removed unused dependencies: `jose`, `@types/chrome`, `gpt-tokenizer`
+
+- **Test Organization**:
+  - 143 new Phase 2 P2P integration tests
+  - Consolidated duplicate tests
+  - Moved misplaced tests to proper directories
+
+### Fixed
+
+- **CLI dev command** - Use `tsx` instead of `ts-node` for ESM compatibility with `.js` extension imports
+- TypeScript compilation errors in VS Code extension
+- Express/cors import issues in Edge Server
+- PatternCategory enum mismatches
+- SignalingServerStats property naming
+- P2P connection bug in Dashboard - now connects to discovered peers instead of random IDs
+
+## [2.7.4] - 2025-12-30
+
+### Fixed
+
+- **Database Schema Migration** (`src/persistence/migrations/all-migrations.ts`):
+  - Added Migration 008 to fix `captured_experiences` table schema mismatch
+  - Added missing columns: `agent_type`, `task_type`, `execution`, `embedding`, `created_at`
+  - Fixes "no such column: agent_type" error during ExperienceCapture initialization
+  - Migrates existing data from `captured_at` to `created_at` column
+
+### Changed
+
+- **Logger Standardization** (33 files refactored):
+  - Migrated all agents from `console.log/error/warn` to centralized `Logger` utility
+  - Added `protected logger` to `BaseAgent` for inheritance by all child agents
+  - Removed duplicate local `Logger` interfaces and `ConsoleLogger` classes from 8 agents
+  - Migrated 19 main QE agents, 7 n8n workflow agents, 4 utility/adapter files
+  - Reduced console calls in `src/agents/` from 90 to 25 (72% reduction)
+  - Remaining calls are in interface defaults, example scripts, and string literals
+
+- **Security Improvements** (GOAP Planning):
+  - Migrated remaining `Math.random()` calls to `SecureRandom.randomString()` in:
+    - `src/planning/PlanSimilarity.ts`
+    - `src/planning/GOAPPlanner.ts` (2 locations)
+    - `src/planning/PlanLearning.ts`
+
+## [2.7.3] - 2025-12-30
+
+### Added
+
+#### GOAP Phase 5 & 6: Plan Learning & Live Agent Execution (Major Feature)
+
+- **PlanLearning** (`src/planning/PlanLearning.ts`): Learning from execution outcomes
+  - EMA-based action success rate tracking (α=0.1 for stability)
+  - Q-Learning integration for GOAP action selection
+  - Execution history persistence in `goap_learning_history` table
+  - Per-action statistics in `goap_action_stats` table
+  - `learnFromExecution()` called automatically after plan execution
+
+- **PlanSimilarity** (`src/planning/PlanSimilarity.ts`): Plan signature matching for reuse
+  - Feature vector extraction from goals and world states
+  - Cosine similarity for plan matching (<100ms lookup)
+  - Plan signatures stored in `goap_plan_signatures` table
+  - Configurable similarity threshold (default 0.75)
+  - `tryReuseSimilarPlan()` called before A* search
+
+- **Live Agent Execution** (`src/planning/execution/PlanExecutor.ts` v1.2.0):
+  - Real agent spawning via AgentRegistry (not just dry-run)
+  - Output parsing for real-time world state updates:
+    - `parseTestOutput()`: Coverage and test result extraction
+    - `parseCoverageOutput()`: Coverage metric parsing
+    - `parseSecurityOutput()`: Vulnerability score calculation
+    - `parsePerformanceOutput()`: Performance metric extraction
+    - `parseAnalysisOutput()`: Code quality metric parsing
+  - Plan signature storage after successful live execution
+  - Learning feedback loop integration
+
+- **GOAPPlanner Integration** (`src/planning/GOAPPlanner.ts`):
+  - `getPlanSimilarity()`: Access internal similarity matcher
+  - `setPlanReuseEnabled()`: Toggle plan reuse (default: enabled)
+  - `storePlanSignature()`: Persist plan for future reuse
+  - `recordPlanReuseOutcome()`: Track reuse success/failure
+  - `getPlanReuseStats()`: Reuse metrics
+
+- **GOAPQualityGateIntegration** (`src/planning/integration/`):
+  - `getPlanner()`: Access internal planner for Phase 5/6 integration
+
+### Changed
+
+- **Planning Module** (`src/planning/index.ts`): Version 1.6.0
+  - Added 'Live agent execution via AgentRegistry' capability
+  - Added 'Real-time world state updates from agent output' capability
+
+- **GOAPPlan Type** (`src/planning/types.ts`):
+  - Added `reusedFromPlanId?: string` for tracking plan reuse
+  - Added `similarityScore?: number` for reuse quality metrics
+
+### Tests
+
+- **New: Live Execution Tests** (`tests/integration/goap-live-execution.test.ts`): 17 tests
+  - 8 output parsing tests (all methods verified)
+  - 3 live execution tests (real agent spawning)
+  - 2 plan signature storage tests
+  - 2 agent type mapping tests
+  - 1 world state tracking test
+  - 1 live vs dry-run code path test
+
+- **New: Phase 5 Integration Tests** (`tests/integration/goap-phase5-real-integration.test.ts`): 15 tests
+  - PlanSimilarity integration with GOAPPlanner
+  - PlanLearning integration with PlanExecutor
+  - End-to-end plan→execute→learn→reuse flow
+  - Performance verification (<100ms similarity lookup)
+
+- **New: Plan Learning Tests** (`tests/integration/goap-plan-learning.test.ts`): 31 tests
+  - PlanLearning component tests
+  - PlanSimilarity component tests
+  - Q-Learning integration tests
+
+- **Total GOAP Tests**: 84 tests passing
+
+## [2.7.2] - 2025-12-29
+
+### Added
+
+#### GOAP Phase 3: Task Orchestration System (Major Feature)
+- **GOAPPlanner** (`src/planning/GOAPPlanner.ts`): AI-powered goal-oriented action planning
+  - Automated plan generation from high-level goals
+  - Cost-based action selection with precondition/effect modeling
+  - Supports quality gates, test strategies, fleet management workflows
+  - Configurable search strategies (A*, greedy, breadth-first)
+
+- **WorldStateBuilder** (`src/planning/WorldStateBuilder.ts`): Dynamic world state construction
+  - Builds state from current system context (fleet, agents, coverage, quality)
+  - Integrates with AgentDB for persistent state tracking
+  - Supports partial state updates and delta calculations
+
+- **PlanExecutor** (`src/planning/execution/PlanExecutor.ts`): Robust plan execution engine
+  - Sequential and parallel action execution modes
+  - Automatic rollback on failure with compensation actions
+  - Progress tracking and real-time status updates
+  - Retry logic with configurable backoff
+
+- **GOAP Action Libraries** (`src/planning/actions/`):
+  - `fleet-actions.ts`: Fleet initialization, agent spawning, topology optimization
+  - `orchestration-actions.ts`: Task distribution, load balancing, coordination
+  - `quality-gate-actions.ts`: Quality evaluation, threshold checks, deployment decisions
+  - `test-strategy-actions.ts`: Test generation, execution, coverage analysis
+
+- **GOAP Integration Modules** (`src/planning/integration/`):
+  - `GOAPQualityGateIntegration.ts`: Automated quality gate workflows
+  - `GOAPTaskOrchestration.ts`: Task orchestration with intelligent planning
+
+- **Task Workflow Goals** (`src/planning/goals/`): Pre-defined goal templates
+  - Quality gate evaluation goals
+  - Test coverage improvement goals
+  - Fleet optimization goals
+
+#### Database Migration System
+- **Migration Framework** (`src/persistence/migrations/`): Versioned schema migrations with rollback support
+  - `MigrationRunner` class for executing migrations in order
+  - Version tracking in `schema_migrations` table
+  - Helper functions: `tableExists()`, `columnExists()`, `safeAddColumn()`, `safeCreateIndex()`
+  - 7 migrations covering all core tables (learning, dream, transfer, GOAP, memory, agents)
+
+- **CLI Migrate Command** (`src/cli/commands/migrate/`):
+  - `aqe migrate status` - Show current migration status
+  - `aqe migrate run` - Run all pending migrations
+  - `aqe migrate rollback` - Rollback last migration
+  - `aqe migrate reset` - Reset and rerun all migrations (with backup)
+
+#### Backup System (Data Protection)
+- **Memory Backup Script** (`scripts/backup-memory.js`):
+  - `npm run backup` - Create timestamped backup of `.agentic-qe/` directory
+  - `npm run backup:list` - List available backups with sizes
+  - `npm run backup:restore` - Interactive restore from backup
+  - Backups stored in `.agentic-qe/backups/` with automatic cleanup
+
+- **Incident Documentation** (`docs/incidents/2025-12-29-memory-db-deletion.md`):
+  - Root cause analysis of accidental data loss
+  - Prevention measures and policy updates
+
+#### Architecture Documentation
+- **C4 Architecture Diagrams** (`docs/architecture/`):
+  - `c4-context.puml`: System context diagram
+  - `c4-container.puml`: Container-level architecture
+  - `c4-component.puml`: Component details
+
+#### Comprehensive Test Suite
+- **GOAP Unit Tests** (`tests/unit/planning/`):
+  - `GOAPPlanner.test.ts`: 1,524 lines covering all planner scenarios
+  - `WorldStateBuilder.test.ts`: 938 lines testing state construction
+  - `types.test.ts`: 627 lines validating type definitions
+
+- **GOAP Integration Tests** (`tests/integration/`):
+  - `goap-quality-gate.test.ts`: End-to-end quality gate workflows
+  - `goap-task-orchestration.test.ts`: Task orchestration scenarios
+
+#### Additional Enhancements
+- **Quality Gate Evaluation Tool** (`src/mcp/tools/qe/quality-gates/evaluate-quality-gate.ts`)
+- **Learning Metrics** (`src/learning/metrics/LearningMetrics.ts`)
+- **Agent Registry Service** (`src/mcp/services/AgentRegistry.ts`)
+- **Enhanced MCP Task Orchestration** with GOAP integration
+
+### Changed
+
+- **Database Initialization**: Migrations now run automatically during `aqe init`
+  - Ensures schema consistency across all installations
+  - Handles existing tables gracefully with defensive checks
+  - Adds missing columns to tables created by older versions
+
+- **CLAUDE.md**: Added data protection policies and backup commands
+- **MCP Server**: Enhanced with Phase 3 domain tools and fleet initialization
+
+### Fixed
+
+- **Schema Evolution**: Fixed incompatible table schemas from backup restoration
+  - `dream_cycles`, `dream_insights`, `concept_nodes`, `concept_edges` tables now have correct schemas
+  - Dream learning cycle now works with migrated data
+
+### Security
+
+- **Data Protection Policy**: Added safeguards against accidental database deletion
+  - Explicit user confirmation required for destructive operations
+  - Automatic backup before risky operations recommended
+
+## [2.7.1] - 2025-12-29
+
+### Fixed
+
+#### Type Safety Remediation (GOAP Issue #149 Phase 2 Complete)
+- **TypeScript Compilation**: 146 errors → 0 errors (100% fixed)
+- **Agent Type Safety**: Fixed 13 major agent files with proper typing
+  - `FleetCommanderAgent.ts`: 29 errors fixed (index signatures, event handlers)
+  - `RealAgentDBAdapter.ts`: 28 errors fixed (`getDb()` helper, SQL interface)
+  - `DeploymentReadinessAgent.ts`: 27 errors fixed (task payload typing)
+  - `RequirementsValidatorAgent.ts`: 16 errors fixed (memory retrieval casts)
+  - `SecurityScannerAgent.ts`: 15 errors fixed (3 interface index signatures)
+  - `PatternMemoryIntegration.ts`: 14 errors fixed (storage type interfaces)
+  - `AccessibilityAllyAgent.ts`: 11 errors fixed (event data casting)
+  - `PerformanceTesterAgent.ts`: 11 errors fixed (index signatures)
+  - `FlakyTestHunterAgent.ts`: 9 errors fixed (task payload typing)
+  - `ProductionIntelligenceAgent.ts`: 8 errors fixed (task payload casting)
+  - `RegressionRiskAnalyzerAgent.ts`: 7 errors fixed (task payload casting)
+  - `TestExecutorAgent.ts`: 6 errors fixed (history cast, config typing)
+  - Plus scattered fixes in CLI, MCP, and utility files
+
+### Changed
+
+- **`any` Type Count**: 568 → 538 (5.3% further reduction from v2.7.0)
+- **GOAP Plan Updated**: Phase 2 marked complete with detailed progress tracking
+- **Type Patterns Documented**: Index signatures, memory casts, task payload typing
+
 ## [2.7.0] - 2025-12-27
 
 ### Added

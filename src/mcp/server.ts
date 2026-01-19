@@ -93,6 +93,7 @@ import {
   VisualDetectRegressionArgs,
   QeSecurityScanComprehensiveArgs,
   QeQualitygateEvaluateArgs,
+  QeQualitygateEvaluateGoapArgs,
   QeQualitygateGenerateReportArgs
 } from './handlers/phase3/Phase3DomainTools.js';
 import { EventEmitter } from 'events';
@@ -101,6 +102,9 @@ import { LearningStoreQValueHandler } from './handlers/learning/learning-store-q
 import { LearningQueryHandler } from './handlers/learning/learning-query.js';
 import { LearningStorePatternHandler } from './handlers/learning/learning-store-pattern.js';
 import { LearningEventListener, initLearningEventListener } from './services/LearningEventListener.js';
+import { SleepScheduler } from '../learning/scheduler/SleepScheduler.js';
+import { NewDomainToolsHandler } from './handlers/NewDomainToolsHandler.js';
+import { RuVectorHandler } from './handlers/ruvector/index.js';
 
 // Phase 3: Domain-specific tool functions
 import {
@@ -169,6 +173,7 @@ export class AgenticQEMCPServer {
   private proposals: Map<string, any>;
   private eventBus: EventEmitter;
   private learningListener: LearningEventListener | null;
+  private sleepScheduler: SleepScheduler | null = null;
 
   constructor() {
     this.server = new Server(
@@ -359,11 +364,35 @@ export class AgenticQEMCPServer {
     this.handlers.set(TOOL_NAMES.QE_TESTGEN_GENERATE_INTEGRATION, phase3Handler);
     this.handlers.set(TOOL_NAMES.QE_TESTGEN_OPTIMIZE_SUITE, phase3Handler);
     this.handlers.set(TOOL_NAMES.QE_TESTGEN_ANALYZE_QUALITY, phase3Handler);
-    // Quality-Gates Domain (4 tools)
+    // Quality-Gates Domain (5 tools - includes GOAP)
     this.handlers.set(TOOL_NAMES.QE_QUALITYGATE_EVALUATE, phase3Handler);
+    this.handlers.set(TOOL_NAMES.QE_QUALITYGATE_EVALUATE_GOAP, phase3Handler);
     this.handlers.set(TOOL_NAMES.QE_QUALITYGATE_ASSESS_RISK, phase3Handler);
     this.handlers.set(TOOL_NAMES.QE_QUALITYGATE_VALIDATE_METRICS, phase3Handler);
     this.handlers.set(TOOL_NAMES.QE_QUALITYGATE_GENERATE_REPORT, phase3Handler);
+
+    // New Domain Tools Handler (Chaos, Integration, Token-Optimized)
+    const newDomainHandler = new NewDomainToolsHandler(this.registry, this.hookExecutor);
+    // Chaos Engineering Domain (3 tools)
+    this.handlers.set(TOOL_NAMES.CHAOS_INJECT_LATENCY, newDomainHandler);
+    this.handlers.set(TOOL_NAMES.CHAOS_INJECT_FAILURE, newDomainHandler);
+    this.handlers.set(TOOL_NAMES.CHAOS_RESILIENCE_TEST, newDomainHandler);
+    // Integration Testing Domain (2 tools)
+    this.handlers.set(TOOL_NAMES.INTEGRATION_DEPENDENCY_CHECK, newDomainHandler);
+    this.handlers.set(TOOL_NAMES.INTEGRATION_TEST_ORCHESTRATE, newDomainHandler);
+    // Token-Optimized Domain (3 tools)
+    this.handlers.set(TOOL_NAMES.TEST_EXECUTE_FILTERED, newDomainHandler);
+    this.handlers.set(TOOL_NAMES.PERFORMANCE_TEST_FILTERED, newDomainHandler);
+    this.handlers.set(TOOL_NAMES.QUALITY_ASSESS_FILTERED, newDomainHandler);
+
+    // Phase 0.5: RuVector GNN Self-Learning Cache Tools (6 tools)
+    const ruvectorHandler = new RuVectorHandler(this.registry, this.hookExecutor);
+    this.handlers.set(TOOL_NAMES.RUVECTOR_HEALTH, ruvectorHandler);
+    this.handlers.set(TOOL_NAMES.RUVECTOR_METRICS, ruvectorHandler);
+    this.handlers.set(TOOL_NAMES.RUVECTOR_FORCE_LEARN, ruvectorHandler);
+    this.handlers.set(TOOL_NAMES.RUVECTOR_STORE_PATTERN, ruvectorHandler);
+    this.handlers.set(TOOL_NAMES.RUVECTOR_SEARCH, ruvectorHandler);
+    this.handlers.set(TOOL_NAMES.RUVECTOR_COST_SAVINGS, ruvectorHandler);
   }
 
   /**
@@ -841,9 +870,11 @@ export class AgenticQEMCPServer {
           } else if (name === TOOL_NAMES.QE_TESTGEN_ANALYZE_QUALITY) {
             result = await phase3Handler.handleQeTestgenAnalyzeQuality(safeArgs);
           }
-          // Quality-Gates Domain
+          // Quality-Gates Domain (5 tools - includes GOAP)
           else if (name === TOOL_NAMES.QE_QUALITYGATE_EVALUATE) {
             result = await phase3Handler.handleQeQualitygateEvaluate(safeArgs as unknown as QeQualitygateEvaluateArgs);
+          } else if (name === TOOL_NAMES.QE_QUALITYGATE_EVALUATE_GOAP) {
+            result = await phase3Handler.handleQeQualitygateEvaluateGoap(safeArgs as unknown as QeQualitygateEvaluateGoapArgs);
           } else if (name === TOOL_NAMES.QE_QUALITYGATE_ASSESS_RISK) {
             result = await phase3Handler.handleQeQualitygateAssessRisk(safeArgs);
           } else if (name === TOOL_NAMES.QE_QUALITYGATE_VALIDATE_METRICS) {
@@ -896,6 +927,69 @@ export class AgenticQEMCPServer {
             result = await getAgentStatus(safeArgs as unknown as AgentStatusParams);
           } else {
             throw new McpError(ErrorCode.MethodNotFound, `Unknown Phase 3 tool: ${name}`);
+          }
+
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        }
+
+        // New Domain Tools routing (Chaos, Integration, Token-Optimized)
+        if (name.startsWith('mcp__agentic_qe__chaos_') ||
+            name.startsWith('mcp__agentic_qe__integration_') ||
+            name === TOOL_NAMES.TEST_EXECUTE_FILTERED ||
+            name === TOOL_NAMES.PERFORMANCE_TEST_FILTERED ||
+            name === TOOL_NAMES.QUALITY_ASSESS_FILTERED) {
+          const newDomainHandler = handler as NewDomainToolsHandler;
+          const safeArgs = args || {};
+          let result;
+
+          // Chaos Engineering Tools
+          if (name === TOOL_NAMES.CHAOS_INJECT_LATENCY) {
+            result = await newDomainHandler.handleChaosInjectLatency(safeArgs as Record<string, unknown>);
+          } else if (name === TOOL_NAMES.CHAOS_INJECT_FAILURE) {
+            result = await newDomainHandler.handleChaosInjectFailure(safeArgs as Record<string, unknown>);
+          } else if (name === TOOL_NAMES.CHAOS_RESILIENCE_TEST) {
+            result = await newDomainHandler.handleChaosResilienceTest(safeArgs as Record<string, unknown>);
+          }
+          // Integration Testing Tools
+          else if (name === TOOL_NAMES.INTEGRATION_DEPENDENCY_CHECK) {
+            result = await newDomainHandler.handleDependencyCheck(safeArgs as Record<string, unknown>);
+          } else if (name === TOOL_NAMES.INTEGRATION_TEST_ORCHESTRATE) {
+            result = await newDomainHandler.handleIntegrationTestOrchestrate(safeArgs as Record<string, unknown>);
+          }
+          // Token-Optimized Tools
+          else if (name === TOOL_NAMES.TEST_EXECUTE_FILTERED) {
+            result = await newDomainHandler.handleTestExecuteFiltered(safeArgs as Record<string, unknown>);
+          } else if (name === TOOL_NAMES.PERFORMANCE_TEST_FILTERED) {
+            result = await newDomainHandler.handlePerformanceTestFiltered(safeArgs as Record<string, unknown>);
+          } else if (name === TOOL_NAMES.QUALITY_ASSESS_FILTERED) {
+            result = await newDomainHandler.handleQualityAssessFiltered(safeArgs as Record<string, unknown>);
+          } else {
+            throw new McpError(ErrorCode.MethodNotFound, `Unknown New Domain tool: ${name}`);
+          }
+
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        }
+
+        // RuVector GNN Cache Tools routing (Phase 0.5)
+        if (name.startsWith('mcp__agentic_qe__ruvector_')) {
+          const ruvectorHandler = handler as RuVectorHandler;
+          const safeArgs = args || {};
+          let result;
+
+          if (name === TOOL_NAMES.RUVECTOR_HEALTH) {
+            result = await ruvectorHandler.handleRuvectorHealth(safeArgs as Record<string, unknown>);
+          } else if (name === TOOL_NAMES.RUVECTOR_METRICS) {
+            result = await ruvectorHandler.handleRuvectorMetrics(safeArgs as Record<string, unknown>);
+          } else if (name === TOOL_NAMES.RUVECTOR_FORCE_LEARN) {
+            result = await ruvectorHandler.handleRuvectorForceLearn(safeArgs as Record<string, unknown>);
+          } else if (name === TOOL_NAMES.RUVECTOR_STORE_PATTERN) {
+            result = await ruvectorHandler.handleRuvectorStorePattern(safeArgs as Record<string, unknown>);
+          } else if (name === TOOL_NAMES.RUVECTOR_SEARCH) {
+            result = await ruvectorHandler.handleRuvectorSearch(safeArgs as Record<string, unknown>);
+          } else if (name === TOOL_NAMES.RUVECTOR_COST_SAVINGS) {
+            result = await ruvectorHandler.handleRuvectorCostSavings(safeArgs as Record<string, unknown>);
+          } else {
+            throw new McpError(ErrorCode.MethodNotFound, `Unknown RuVector tool: ${name}`);
           }
 
           return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
@@ -1028,15 +1122,71 @@ export class AgenticQEMCPServer {
     const serverTransport = transport || new StdioServerTransport();
     await this.server.connect(serverTransport);
 
+    // P1 Implementation: Auto-start SleepScheduler for background learning
+    await this.startSleepScheduler();
+
     // Log to stderr to not interfere with MCP stdio protocol
     console.error('Agentic QE MCP Server started successfully');
     console.error(`Available tools: ${agenticQETools.map(t => t.name).join(', ')}`);
   }
 
   /**
+   * Start the SleepScheduler for background learning
+   * P1 Implementation: Dream Scheduler Auto-Start
+   */
+  private async startSleepScheduler(): Promise<void> {
+    try {
+      // Check if learning is enabled via config file
+      const fs = await import('fs-extra');
+      const path = await import('path');
+      const configPath = path.join(process.cwd(), '.agentic-qe', 'learning-config.json');
+
+      if (!await fs.pathExists(configPath)) {
+        console.error('[SleepScheduler] Learning config not found, skipping scheduler start');
+        return;
+      }
+
+      const config = await fs.readJson(configPath);
+      if (!config.enabled) {
+        console.error('[SleepScheduler] Learning is disabled in config');
+        return;
+      }
+
+      // Create and start the scheduler
+      this.sleepScheduler = new SleepScheduler({
+        mode: config.scheduler?.mode || 'hybrid',
+        schedule: config.scheduler?.schedule,
+        learningBudget: config.scheduler?.learningBudget || {
+          maxPatternsPerCycle: 50,
+          maxAgentsPerCycle: 5,
+          maxDurationMs: 3600000
+        }
+      });
+
+      await this.sleepScheduler.start();
+      console.error('[SleepScheduler] Background learning scheduler started');
+    } catch (error) {
+      // Non-critical - log and continue
+      console.error('[SleepScheduler] Failed to start:', error instanceof Error ? error.message : String(error));
+      this.sleepScheduler = null;
+    }
+  }
+
+  /**
    * Stop the MCP server
    */
   async stop(): Promise<void> {
+    // Stop the SleepScheduler if running
+    if (this.sleepScheduler) {
+      try {
+        await this.sleepScheduler.stop();
+        console.error('[SleepScheduler] Background learning scheduler stopped');
+      } catch (error) {
+        console.error('[SleepScheduler] Error stopping scheduler:', error);
+      }
+      this.sleepScheduler = null;
+    }
+
     // Cleanup all agents
     await this.registry.clearAll();
 
